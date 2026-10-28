@@ -8,7 +8,12 @@
     "typecheck": "tsc --noEmit",
     "build": "tsc --noEmit && vite build --configLoader native",
     "portable": "node scripts/package-standalone.mjs",
-    "test": "tsc -p tsconfig.test.json && node --test --test-isolation=none tests/gait.test.mjs"
+    "test": "tsc -p tsconfig.test.json && node --test --test-isolation=none tests/gait.test.mjs",
+    "deploy": "npm run build && gh-pages -d dist"
   },
-  "devDependencies": { "typescript": "^5.9.3", "vite": "^7.1.12" }
+  "devDependencies": {
+    "gh-pages": "^6.3.0",
+    "typescript": "^5.9.3",
+    "vite": "^7.1.12"
+  }
 }
