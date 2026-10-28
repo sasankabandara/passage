@@ -3,6 +3,7 @@ import ts from 'typescript';
 // Use TypeScript's in-process transpiler. This also supports environments where
 // spawning esbuild's native service or probing Windows network drives is disabled.
 export default {
+  base: './',
   resolve: { preserveSymlinks: true },
   esbuild: false,
   optimizeDeps: { noDiscovery: true, include: [] },
