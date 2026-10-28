@@ -1,0 +1,1847 @@
+true              &&(function polyfill() {
+	const relList = document.createElement("link").relList;
+	if (relList && relList.supports && relList.supports("modulepreload")) return;
+	for (const link of document.querySelectorAll("link[rel=\"modulepreload\"]")) processPreload(link);
+	new MutationObserver((mutations) => {
+		for (const mutation of mutations) {
+			if (mutation.type !== "childList") continue;
+			for (const node of mutation.addedNodes) if (node.tagName === "LINK" && node.rel === "modulepreload") processPreload(node);
+		}
+	}).observe(document, {
+		childList: true,
+		subtree: true
+	});
+	function getFetchOpts(link) {
+		const fetchOpts = {};
+		if (link.integrity) fetchOpts.integrity = link.integrity;
+		if (link.referrerPolicy) fetchOpts.referrerPolicy = link.referrerPolicy;
+		if (link.crossOrigin === "use-credentials") fetchOpts.credentials = "include";
+		else if (link.crossOrigin === "anonymous") fetchOpts.credentials = "omit";
+		else fetchOpts.credentials = "same-origin";
+		return fetchOpts;
+	}
+	function processPreload(link) {
+		if (link.ep) return;
+		link.ep = true;
+		const fetchOpts = getFetchOpts(link);
+		fetch(link.href, fetchOpts);
+	}
+}());
+
+class Camera {
+    width = 1;
+    height = 1;
+    scale = 200;
+    distance = 8;
+    eyeX = -0.2;
+    eyeY = 0.18;
+    resize(w, h) { this.width = w; this.height = h; this.scale = Math.min(Math.sqrt(w * h / 85), w / 6); }
+    project(x, y, z, out, offset = 0) {
+        const k = this.distance / (this.distance + z);
+        out[offset] = this.width * 0.52 + (this.eyeX + (x - this.eyeX) * k) * this.scale;
+        out[offset + 1] = this.height * 0.51 + (this.eyeY + (y - this.eyeY) * k) * this.scale;
+        out[offset + 2] = this.distance + z;
+    }
+    get worldWidth() { return this.width / this.scale; }
+    get worldHeight() { return this.height / this.scale; }
+}
+
+const clamp = (n, a = 0, b = 1) => Math.max(a, Math.min(b, n));
+const lerp = (a, b, t) => a + (b - a) * t;
+const smooth = (t) => { t = clamp(t); return t * t * (3 - 2 * t); };
+const smoother = (t) => { t = clamp(t); return t * t * t * (t * (t * 6 - 15) + 10); };
+const angleDelta = (a, b) => Math.atan2(Math.sin(b - a), Math.cos(b - a));
+const angleLerp = (a, b, t) => a + angleDelta(a, b) * t;
+class Random {
+    seed;
+    constructor(seed = 37621) {
+        this.seed = seed;
+    }
+    next() { let t = this.seed += 0x6d2b79f5; t = Math.imul(t ^ t >>> 15, t | 1); t ^= t + Math.imul(t ^ t >>> 7, t | 61); return ((t ^ t >>> 14) >>> 0) / 4294967296; }
+    range(a, b) { return lerp(a, b, this.next()); }
+}
+
+const FOOT_GAP = 0.09;
+function createWalker(id, x, y, yaw, height = 1.76) {
+    const scale = height / 1.76;
+    const feet = [-1, 1].map(side => {
+        const fx = x - Math.sin(yaw) * side * FOOT_GAP * scale;
+        const fy = y + Math.cos(yaw) * side * FOOT_GAP * scale;
+        return { side, x: fx, y: fy, z: 0, yaw, pitch: 0, px: fx, py: fy, pz: 0, pyaw: yaw, ppitch: 0,
+            ax: fx, ay: fy, anchorYaw: yaw, fromX: fx, fromY: fy, toX: fx, toY: fy, fromYaw: yaw, toYaw: yaw,
+            stage: 'stance', t: 0, duration: 0.44, load: 1, pload: 1, planted: true, takeoffPitch: 0, turning: false, midX: fx, midY: fy, targetVX: 0, targetVY: 0, minAdvance: 0 };
+    });
+    return { id, x, y, px: x, py: y, yaw, pyaw: yaw, vx: 0, vy: 0, desiredX: 0, desiredY: 0, speed: 0,
+        height, scale, leg: 0.434 * scale, shoeLength: 0.29 * scale, shoeWidth: 0.108 * scale, build: 1, pace: 0.68,
+        phase: 0, age: 0, nextSide: id % 2, sinceStep: 0.15 + (id % 4) * 0.045, stepTravel: 0, feet, goalX: x + 10, goalY: y, route: 0,
+        pauseAt: 12, pauseFor: 0, pausedOnce: false, pair: -1, hasBeenVisible: false, sway: 0, psway: 0, blockedFor: 0,
+        stepNumber: 0, stepPeriod: .62, hipZ: .91 * scale, phipZ: .91 * scale, stillFor: 0, exiting: false, turnYaw: null, turnHoldFor: 0, turnHoldYaw: 0, avoidSide: 1, pphase: 0, settling: 0, psettling: 0, gaitSpeed: 0,
+        walkStyle: 'Regular', strideScale: 1, cadenceScale: 1, liftScale: 1, armScale: 1, swayScale: 1 };
+}
+function savePrevious(p) {
+    p.px = p.x;
+    p.py = p.y;
+    p.pyaw = p.yaw;
+    p.psway = p.sway;
+    p.phipZ = p.hipZ;
+    p.pphase = p.phase;
+    p.psettling = p.settling;
+    for (const f of p.feet) {
+        f.px = f.x;
+        f.py = f.y;
+        f.pz = f.z;
+        f.pyaw = f.yaw;
+        f.ppitch = f.pitch;
+        f.pload = f.load;
+    }
+}
+function planStep(p, f, stopping, guard, turning = false, releaseSpace = false) {
+    const s = p.speed;
+    const intent = Math.hypot(p.desiredX, p.desiredY) > .04 ? Math.atan2(p.desiredY, p.desiredX) : p.yaw;
+    // Reach constraints can briefly deflect root velocity. Keep placements aligned
+    // with the intended walk rather than turning a shoe at every solver correction.
+    const travelYaw = turning ? intent : p.yaw + clamp(angleDelta(p.yaw, intent), -0.3, .30);
+    // Reachable orientation changes are distributed across successive foot placements.
+    f.toYaw = f.yaw + clamp(angleDelta(f.yaw, travelYaw + f.side * .035), turning ? -0.55 : -0.33, turning ? .55 : .33);
+    const supporting = p.feet[f.side < 0 ? 1 : 0];
+    f.toYaw = supporting.yaw + clamp(angleDelta(supporting.yaw, f.toYaw), -0.6, .60);
+    f.fromYaw = f.yaw;
+    f.fromX = f.ax;
+    f.fromY = f.ay;
+    const turn = Math.abs(angleDelta(p.yaw, travelYaw));
+    f.duration = (turning ? .28 : clamp(.50 - s * .075, .40, .50)) / p.cadenceScale;
+    const lateral = f.side * Math.max(FOOT_GAP * p.scale, p.shoeWidth * .80 + .010);
+    // Each walking foot passes the supporting foot. Root-relative targets can
+    // settle into a step-to pattern after braking: one leg always leads while
+    // the other only catches up. Keep a reachable advance past the support.
+    const lead = stopping ? 0 : Math.min(.76 * p.scale, (s * (f.duration + .10) + .32 * p.scale) * p.strideScale) * (1 - clamp(turn / 2) * .45);
+    f.minAdvance = stopping ? 0 : clamp(p.gaitSpeed * .25, .10 * p.scale, .23 * p.scale);
+    f.toX = p.x + Math.cos(f.toYaw) * lead - Math.sin(f.toYaw) * lateral;
+    f.toY = p.y + Math.sin(f.toYaw) * lead + Math.cos(f.toYaw) * lateral;
+    if (!stopping) {
+        const advance = (f.toX - supporting.ax) * Math.cos(f.toYaw) + (f.toY - supporting.ay) * Math.sin(f.toYaw);
+        const extra = Math.max(0, f.minAdvance - advance);
+        f.toX += Math.cos(f.toYaw) * extra;
+        f.toY += Math.sin(f.toYaw) * extra;
+    }
+    // Limit a single stride instead of stretching either leg to satisfy the route.
+    const dx = f.toX - f.ax, dy = f.toY - f.ay, dist = Math.hypot(dx, dy), limit = 1.12 * p.scale;
+    if (dist > limit) {
+        f.toX = f.ax + dx / dist * limit;
+        f.toY = f.ay + dy / dist * limit;
+    }
+    if (!stopping)
+        f.minAdvance = Math.min(f.minAdvance, Math.max(.035 * p.scale, (f.toX - supporting.ax) * Math.cos(f.toYaw) + (f.toY - supporting.ay) * Math.sin(f.toYaw)));
+    const support = p.feet[f.side < 0 ? 1 : 0], sx = f.x - support.x, sy = f.y - support.y, separation = Math.hypot(sx, sy) || 1;
+    if (releaseSpace) {
+        f.toX = f.x + sx / separation * .08 * p.scale;
+        f.toY = f.y + sy / separation * .08 * p.scale;
+        const dx = f.toX - p.x, dy = f.toY - p.y, d = Math.hypot(dx, dy), r = .34 * p.scale;
+        if (d > r) {
+            f.toX = p.x + dx / d * r;
+            f.toY = p.y + dy / d * r;
+        }
+    }
+    turnControl(p, f, support);
+    let midX = turnPoint[0], midY = turnPoint[1];
+    if (guard) {
+        const targetX = f.toX, targetY = f.toY;
+        let found = false;
+        // Shorten or gently widen a reachable placement; never edit a planted anchor.
+        for (let attempt = 0; attempt < (turning ? 18 : 9); attempt++) {
+            const reach = attempt % 3 === 0 ? 1 : attempt % 3 === 1 ? .75 : .45, outward = Math.floor(attempt / 3) * .025 * p.scale;
+            f.toX = f.ax + (targetX - f.ax) * reach - Math.sin(f.toYaw) * f.side * outward;
+            f.toY = f.ay + (targetY - f.ay) * reach + Math.cos(f.toYaw) * f.side * outward;
+            turnControl(p, f, support);
+            midX = turnPoint[0];
+            midY = turnPoint[1];
+            if (turning) {
+                const bend = attempt < 3 ? 0 : attempt < 6 ? .5 : 1;
+                midX = lerp((f.fromX + f.toX) * .5, midX, bend);
+                midY = lerp((f.fromY + f.toY) * .5, midY, bend);
+            }
+            if (!stopping && (f.toX - supporting.ax) * Math.cos(f.toYaw) + (f.toY - supporting.ay) * Math.sin(f.toYaw) < f.minAdvance)
+                continue;
+            if (guard(p, f, f.toX, f.toY, f.toYaw, turning ? midX : undefined, turning ? midY : undefined)) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            p.blockedFor = .22;
+            return false;
+        }
+    }
+    if (turning)
+        f.duration = clamp((Math.hypot(midX - f.fromX, midY - f.fromY) + Math.hypot(f.toX - midX, f.toY - midY)) * .8, .34, .65) / p.cadenceScale;
+    f.midX = midX;
+    f.midY = midY;
+    f.turning = turning;
+    f.targetVX = f.targetVY = 0;
+    f.takeoffPitch = f.pitch;
+    f.stage = 'toeoff';
+    f.t = 0;
+    p.sinceStep = 0;
+    p.stepTravel = 0;
+    p.nextSide = f.side < 0 ? 1 : 0;
+    p.stepNumber++;
+    p.stepPeriod = f.duration + .16;
+    return true;
+}
+const turnPoint = new Float64Array(2);
+function turnControl(p, f, support) {
+    const dx = f.toX - f.fromX, dy = f.toY - f.fromY, length = Math.hypot(dx, dy);
+    const t = clamp(((support.x - f.fromX) * dx + (support.y - f.fromY) * dy) / Math.max(1e-6, length * length));
+    let nx = f.fromX + dx * t - support.x, ny = f.fromY + dy * t - support.y;
+    const distance = Math.hypot(nx, ny);
+    if (distance > .001) {
+        nx /= distance;
+        ny /= distance;
+    }
+    else if (length > .001) {
+        nx = -dy / length * f.side;
+        ny = dx / length * f.side;
+    }
+    else {
+        nx = -Math.sin(p.yaw) * f.side;
+        ny = Math.cos(p.yaw) * f.side;
+    }
+    const bow = Math.max(.16 * p.scale, (.25 * p.scale - distance) * 2 + .16 * p.scale);
+    turnPoint[0] = (f.fromX + f.toX) * .5 + nx * bow;
+    turnPoint[1] = (f.fromY + f.toY) * .5 + ny * bow;
+}
+function gaitVelocity(p, dt, out, offset = 0) {
+    const response = 1 - Math.exp(-dt * 2.3);
+    let vx = lerp(p.vx, p.desiredX, response), vy = lerp(p.vy, p.desiredY, response);
+    out[offset] = vx;
+    out[offset + 1] = vy;
+    if (p.turnYaw !== null) {
+        out[offset] = 0;
+        out[offset + 1] = 0;
+    }
+    limitSupportMotion(p, dt, out, offset);
+}
+function limitSupportMotion(p, dt, out, offset = 0) {
+    let changed = false;
+    const speed = Math.hypot(out[offset], out[offset + 1]);
+    if (speed > .000001) {
+        const delta = angleDelta(p.yaw, Math.atan2(out[offset + 1], out[offset]));
+        if (Math.abs(delta) > .40) {
+            const yaw = p.yaw + clamp(delta, -0.4, .40), component = Math.max(0, out[offset] * Math.cos(yaw) + out[offset + 1] * Math.sin(yaw));
+            out[offset] = Math.cos(yaw) * component;
+            out[offset + 1] = Math.sin(yaw) * component;
+            changed = true;
+        }
+    }
+    for (let iteration = 0; iteration < 4; iteration++)
+        for (const f of p.feet) {
+            if (!f.planted || (f.stage === 'toeoff' && f.load < .12))
+                continue;
+            const ex = p.x + out[offset] * dt, ey = p.y + out[offset + 1] * dt, dx = ex - f.ax, dy = ey - f.ay, d = Math.hypot(dx, dy);
+            const limit = Math.max(.52 * p.scale, Math.hypot(p.x - f.ax, p.y - f.ay));
+            if (d > limit) {
+                out[offset] = (f.ax + dx / d * limit - p.x) / dt;
+                out[offset + 1] = (f.ay + dy / d * limit - p.y) / dt;
+                changed = true;
+            }
+        }
+    return changed;
+}
+const temporaryMotion = new Float64Array(2);
+function updateGait(p, dt, guard, motion, offset = 0) {
+    savePrevious(p);
+    p.age += dt;
+    p.blockedFor = Math.max(0, p.blockedFor - dt);
+    p.turnHoldFor = Math.max(0, p.turnHoldFor - dt);
+    p.gaitSpeed = lerp(p.gaitSpeed, Math.hypot(p.desiredX, p.desiredY), 1 - Math.exp(-dt * 2.3));
+    if (!motion) {
+        gaitVelocity(p, dt, temporaryMotion);
+        motion = temporaryMotion;
+        offset = 0;
+    }
+    const vx = motion[offset], vy = motion[offset + 1];
+    p.vx = vx;
+    p.vy = vy;
+    p.speed = Math.hypot(vx, vy);
+    p.x += vx * dt;
+    p.y += vy * dt;
+    p.stillFor = p.speed < .05 ? p.stillFor + dt : Math.max(0, p.stillFor - dt * 2);
+    if (Math.hypot(p.desiredX, p.desiredY) > .02) {
+        const yaw = Math.atan2(p.desiredY, p.desiredX), delta = clamp(angleDelta(p.yaw, yaw), -dt * .65, dt * .65);
+        const feetYaw = angleLerp(p.feet[0].yaw, p.feet[1].yaw, .5);
+        p.yaw = feetYaw + clamp(angleDelta(feetYaw, p.yaw + delta), -0.35, .35);
+    }
+    const halfPeriod = clamp((.38 + .12 * Math.min(p.gaitSpeed, 1)) / Math.max(p.gaitSpeed, .08), .54, 1.10) / p.cadenceScale;
+    p.sinceStep += dt;
+    p.stepTravel += p.speed * dt;
+    for (const f of p.feet) {
+        f.t += dt;
+        const opposite = p.feet[f.side === -1 ? 1 : 0];
+        const trailing = (p.x - f.x) * Math.cos(p.yaw) + (p.y - f.y) * Math.sin(p.yaw);
+        if (f.stage === 'stance' && opposite.stage === 'swing' && opposite.t / opposite.duration > .50 && trailing > .055 * p.scale) {
+            f.stage = 'heelrise';
+            f.t = 0;
+        }
+        if (f.stage === 'toeoff') {
+            const t = clamp(f.t / 0.10);
+            f.pitch = lerp(f.takeoffPitch, f.turning ? -0.3 : -0.54, smooth(t));
+            f.z = 0;
+            f.load = 1 - t * 0.95;
+            if (t >= 1) {
+                f.stage = 'swing';
+                f.t = 0;
+                f.planted = false;
+            }
+        }
+        else if (f.stage === 'swing') {
+            const t = clamp(f.t / f.duration), u = smoother(t);
+            if (!f.turning && t < .78) {
+                const remaining = f.duration - f.t, bodyX = p.x + p.vx * remaining, bodyY = p.y + p.vy * remaining;
+                const dx = f.toX - bodyX, dy = f.toY - bodyY, d = Math.hypot(dx, dy), reach = .37 * p.scale;
+                const desiredX = d > reach ? bodyX + dx / d * reach : f.toX, desiredY = d > reach ? bodyY + dy / d * reach : f.toY;
+                // A bounded spring changes the landing gradually, then eases to a
+                // committed target. Directly replacing it made the swing jerk on braking.
+                f.targetVX += clamp(144 * (desiredX - f.toX) - 24 * f.targetVX, -4 * p.scale, 4 * p.scale) * dt;
+                f.targetVY += clamp(144 * (desiredY - f.toY) - 24 * f.targetVY, -4 * p.scale, 4 * p.scale) * dt;
+                const fade = 1 - smoother((t - .40) / .38), targetX = f.toX + f.targetVX * fade * dt, targetY = f.toY + f.targetVY * fade * dt;
+                const advance = (targetX - opposite.ax) * Math.cos(f.toYaw) + (targetY - opposite.ay) * Math.sin(f.toYaw);
+                if ((Math.hypot(p.desiredX, p.desiredY) < .05 || advance >= f.minAdvance) && (!guard || guard(p, f, targetX, targetY, f.toYaw))) {
+                    f.toX = targetX;
+                    f.toY = targetY;
+                }
+                else {
+                    f.targetVX *= .5;
+                    f.targetVY *= .5;
+                }
+            }
+            f.yaw = angleLerp(f.fromYaw, f.toYaw, u);
+            f.pitch = t < .32 ? lerp(f.turning ? -0.3 : -0.54, .055, smoother(t / .32)) : t < .78 ? .055 : lerp(.055, .18, smoother((t - .78) / .22));
+            // Animate the physical shoe centre. Animating its flat contact anchor
+            // instead made unrolling retract the shoe immediately after toe-off.
+            const startPitch = f.turning ? -0.3 : -0.54, startOffset = rollOffset(p.shoeLength, startPitch), endOffset = rollOffset(p.shoeLength, .18);
+            const startX = f.fromX + Math.cos(f.fromYaw) * startOffset, startY = f.fromY + Math.sin(f.fromYaw) * startOffset;
+            const endX = f.toX + Math.cos(f.toYaw) * endOffset, endY = f.toY + Math.sin(f.toYaw) * endOffset;
+            const offset = rollOffset(p.shoeLength, f.pitch);
+            if (f.turning) {
+                // One rounded arc, with no full stop at the outward control point.
+                f.x = (1 - u) ** 2 * startX + 2 * (1 - u) * u * f.midX + u * u * endX;
+                f.y = (1 - u) ** 2 * startY + 2 * (1 - u) * u * f.midY + u * u * endY;
+            }
+            else {
+                f.x = lerp(startX, endX, u);
+                f.y = lerp(startY, endY, u);
+            }
+            f.x -= Math.cos(f.yaw) * offset;
+            f.y -= Math.sin(f.yaw) * offset;
+            const startZ = -p.shoeLength * .57 * Math.sin(startPitch), endZ = p.shoeLength * .43 * Math.sin(.18);
+            const centreZ = lerp(startZ, endZ, u) + (f.turning ? .025 : .055) * p.scale * p.liftScale * (729 / 16) * t * t * (1 - t) ** 4;
+            const pivot = f.pitch >= 0 ? -p.shoeLength * .43 : p.shoeLength * .57;
+            f.z = Math.max(0, centreZ + pivot * Math.sin(f.pitch));
+            f.load = 0;
+            if (t >= 1) {
+                f.ax = f.toX;
+                f.ay = f.toY;
+                f.anchorYaw = f.toYaw;
+                f.x = f.ax;
+                f.y = f.ay;
+                f.yaw = f.anchorYaw;
+                f.z = 0;
+                f.pitch = .18;
+                f.stage = 'landing';
+                f.t = 0;
+                f.planted = true;
+            }
+        }
+        else if (f.stage === 'landing') {
+            const t = clamp(f.t / 0.12);
+            f.pitch = .18 * (1 - smooth(t));
+            f.load = smooth(t);
+            if (t >= 1) {
+                f.stage = 'stance';
+                f.t = 0;
+                f.pitch = 0;
+                f.load = 1;
+            }
+        }
+        else if (f.stage === 'heelrise') {
+            const target = p.speed > .04 ? -0.23 * smooth(trailing / (.30 * p.scale)) : 0;
+            f.pitch = lerp(f.pitch, target, 1 - Math.exp(-dt * 12));
+            f.z = 0;
+            if (p.speed < .04 && Math.abs(f.pitch) < .002) {
+                f.stage = 'stance';
+                f.pitch = 0;
+            }
+        }
+        else {
+            f.x = f.ax;
+            f.y = f.ay;
+            f.yaw = f.anchorYaw;
+            f.z = 0;
+            f.pitch = 0;
+            f.load = 1;
+        }
+    }
+    const busy = p.feet.some(f => f.stage === 'toeoff' || f.stage === 'swing');
+    const f = p.feet[p.nextSide], support = p.feet[1 - p.nextSide];
+    const transferred = support.stage === 'stance' || support.stage === 'landing' && support.t >= .06;
+    if (!busy && (f.stage === 'stance' || f.stage === 'heelrise') && transferred) {
+        const trailing = (p.x - f.ax) * Math.cos(p.yaw) + (p.y - f.ay) * Math.sin(p.yaw);
+        const steering = Math.hypot(p.desiredX, p.desiredY) > .04 ? Math.atan2(p.desiredY, p.desiredX) : p.yaw;
+        if (p.speed < .18 && Math.abs(angleDelta(f.yaw, steering)) > .25 && p.sinceStep > .20) {
+            const began = planStep(p, f, true, guard, true);
+            // Begin a tight turn with the free outside foot when the selected foot's
+            // route would cross the supporting shoe. Its anchor is never dragged.
+            if (!began && (support.stage === 'stance' || support.stage === 'heelrise'))
+                planStep(p, support, true, guard, true, true);
+        }
+        else if ((p.speed > .045 || p.gaitSpeed > .06 && Math.hypot(p.desiredX, p.desiredY) > .05) && ((p.stepNumber === 0 && p.sinceStep > .13) || p.sinceStep >= halfPeriod || p.stepTravel > .43 * p.scale || trailing > .30 * p.scale)) {
+            if (!planStep(p, f, false, guard) && p.speed < .12 && !planStep(p, f, true, guard))
+                planStep(p, f, true, guard, true);
+        }
+        else if (p.speed < 0.045 && Math.hypot(p.desiredX, p.desiredY) < .05 && p.sinceStep > 0.35) {
+            // Complete a final closing step; don't keep cycling while stationary.
+            const lateral = f.side * Math.max(FOOT_GAP * p.scale, p.shoeWidth * .80 + .010);
+            const tx = p.x - Math.sin(p.yaw) * lateral, ty = p.y + Math.cos(p.yaw) * lateral;
+            if (Math.hypot(f.ax - tx, f.ay - ty) > 0.07 * p.scale)
+                planStep(p, f, true, guard);
+            else {
+                const other = p.feet[1 - p.nextSide], ol = other.side * FOOT_GAP * p.scale;
+                if (Math.hypot(other.ax - p.x + Math.sin(p.yaw) * ol, other.ay - p.y - Math.cos(p.yaw) * ol) > 0.07 * p.scale)
+                    p.nextSide = 1 - p.nextSide;
+            }
+        }
+    }
+    let totalLoad = 0, weightedSide = 0;
+    const fx = Math.cos(p.yaw), fy = Math.sin(p.yaw), rx = -fy, ry = fx;
+    for (const f of p.feet) {
+        const progress = ((f.x - p.x) * fx + (f.y - p.y) * fy) / p.scale;
+        let weight = clamp(.5 + progress * 1.8, .16, .88);
+        if (f.stage === 'swing')
+            weight = 0;
+        else if (f.stage === 'toeoff')
+            weight *= 1 - smooth(f.t / .10) * .97;
+        else if (f.stage === 'landing')
+            weight *= smooth(f.t / .12);
+        f.load = weight;
+        totalLoad += weight;
+    }
+    for (const f of p.feet) {
+        f.load /= Math.max(totalLoad, 1e-6);
+        weightedSide += f.load * ((f.x - p.x) * rx + (f.y - p.y) * ry);
+    }
+    p.sway = lerp(p.sway, clamp(weightedSide, -0.037 * p.scale * p.swayScale, .037 * p.scale * p.swayScale), 1 - Math.exp(-dt * 5));
+    const phaseTarget = p.stepNumber > 0 ? (p.stepNumber - 1 + Math.min(p.sinceStep / p.stepPeriod, 1)) * .5 : 0;
+    p.phase = lerp(p.phase, phaseTarget, 1 - Math.exp(-dt * 12));
+    p.settling = 0;
+    for (const f of p.feet)
+        if (f.stage === 'landing')
+            p.settling += Math.sin(Math.PI * Math.min(1, f.t / .12)) * .012 * p.scale;
+    let idealHeight = 0;
+    for (const f of p.feet) {
+        shoePoint(f, p.shoeLength, 0, -p.shoeLength * .14, 1, temporaryAnkle);
+        const hx = p.x + rx * (p.sway + f.side * .09 * p.scale), hy = p.y + ry * (p.sway + f.side * .09 * p.scale);
+        const horizontal = (hx - temporaryAnkle[0]) ** 2 + (hy - temporaryAnkle[1]) ** 2;
+        const span = p.leg * 1.995;
+        idealHeight += f.load * (temporaryAnkle[2] + .065 * p.scale + Math.sqrt(Math.max(.22, span * span - horizontal)));
+    }
+    p.hipZ = lerp(p.hipZ, clamp(idealHeight, .80 * p.scale, .94 * p.scale), 1 - Math.exp(-dt * 11));
+}
+const temporaryAnkle = new Float64Array(3);
+function rollOffset(length, pitch) { return (pitch >= 0 ? -length * .43 : length * .57) * (1 - Math.cos(pitch)); }
+// Local shoe coordinates: u across, v forward. Rotation is around a fixed heel/toe
+// contact, so rolling changes perspective without moving the support anchor.
+function shoePoint(f, length, u, v, alpha = 1, out = new Float64Array(3)) {
+    const yaw = angleLerp(f.pyaw, f.yaw, alpha), pitch = lerp(f.ppitch, f.pitch, alpha);
+    const x = lerp(f.px, f.x, alpha), y = lerp(f.py, f.y, alpha), lift = lerp(f.pz, f.z, alpha);
+    const heel = -length * 0.43, toe = length * 0.57;
+    const pivot = pitch >= 0 ? heel : toe;
+    const forward = pivot + (v - pivot) * Math.cos(pitch);
+    out[0] = x + Math.cos(yaw) * forward - Math.sin(yaw) * u;
+    out[1] = y + Math.sin(yaw) * forward + Math.cos(yaw) * u;
+    out[2] = Math.max(0, lift + (v - pivot) * Math.sin(pitch));
+    return out;
+}
+
+const BONES = [[0, 1], [1, 2], [2, 3], [4, 5], [5, 6], [7, 8], [8, 9], [10, 11], [11, 12], [13, 14], [14, 15], [10, 13], [4, 7]];
+class Rig {
+    joints = new Float64Array(16 * 3);
+    projected = new Float64Array(16 * 3);
+    ankle = new Float64Array(3);
+    set(i, x, y, z) { const o = i * 3; this.joints[o] = x; this.joints[o + 1] = y; this.joints[o + 2] = z; }
+    update(p, alpha = 1) {
+        const yaw = angleLerp(p.pyaw, p.yaw, alpha), fx = Math.cos(yaw), fy = Math.sin(yaw), rx = -fy, ry = fx;
+        const sway = lerp(p.psway, p.sway, alpha);
+        const x = lerp(p.px, p.x, alpha) + rx * sway, y = lerp(p.py, p.y, alpha) + ry * sway, s = p.scale;
+        const feet = p.feet;
+        const twist = Math.sin(lerp(p.pphase, p.phase, alpha) * Math.PI * 2) * 0.027 * s;
+        let hipZ = lerp(p.phipZ, p.hipZ, alpha) - lerp(p.psettling, p.settling, alpha);
+        for (const f of feet) {
+            shoePoint(f, p.shoeLength, 0, -p.shoeLength * 0.14, alpha, this.ankle);
+            const dx = x + rx * f.side * 0.09 * s + fx * twist * f.side - this.ankle[0], dy = y + ry * f.side * 0.09 * s + fy * twist * f.side - this.ankle[1];
+            hipZ = Math.min(hipZ, this.ankle[2] + 0.065 * s + Math.sqrt(Math.max(.02, (p.leg * 2 - .002 * s) ** 2 - dx * dx - dy * dy)));
+        }
+        this.set(0, x, y, hipZ);
+        this.set(1, x + fx * 0.035 * s, y + fy * 0.035 * s, hipZ + 0.39 * s);
+        this.set(2, x + fx * 0.025 * s, y + fy * 0.025 * s, hipZ + 0.56 * s);
+        this.set(3, x + fx * 0.025 * s, y + fy * 0.025 * s, hipZ + 0.73 * s);
+        for (let i = 0; i < 2; i++) {
+            const f = feet[i], side = f.side, h = 4 + i * 3, k = h + 1, a = h + 2;
+            this.set(h, x + rx * side * 0.09 * s + fx * twist * side, y + ry * side * 0.09 * s + fy * twist * side, hipZ);
+            shoePoint(f, p.shoeLength, 0, -p.shoeLength * 0.14, alpha, this.ankle);
+            this.set(a, this.ankle[0], this.ankle[1], this.ankle[2] + 0.065 * s);
+            this.solveKnee(h, a, k, p.leg, p.leg, fx, fy);
+            const sh = 10 + i * 3, el = sh + 1, hand = sh + 2;
+            const footProgress = (lerp(f.px, f.x, alpha) - x) * fx + (lerp(f.py, f.y, alpha) - y) * fy;
+            const swing = Math.max(-0.27, Math.min(0.27, -footProgress * 0.8)) * p.armScale;
+            const shoulderZ = hipZ + 0.47 * s;
+            this.set(sh, x + rx * side * 0.19 * s - fx * twist * side, y + ry * side * 0.19 * s - fy * twist * side, shoulderZ);
+            const armAngle = swing * 1.6;
+            const ex = this.joints[sh * 3] + fx * Math.sin(armAngle) * 0.28 * s + rx * side * 0.025 * s;
+            const ey = this.joints[sh * 3 + 1] + fy * Math.sin(armAngle) * 0.28 * s + ry * side * 0.025 * s;
+            const ez = shoulderZ - Math.cos(armAngle) * 0.28 * s;
+            this.set(el, ex, ey, ez);
+            this.set(hand, ex + fx * Math.sin(armAngle + 0.28) * 0.25 * s, ey + fy * Math.sin(armAngle + 0.28) * 0.25 * s, ez - Math.cos(armAngle + 0.28) * 0.25 * s);
+        }
+        return this.joints;
+    }
+    solveKnee(hi, ai, ki, l1, l2, fx, fy) {
+        const j = this.joints, h = hi * 3, a = ai * 3;
+        const dx = j[a] - j[h], dy = j[a + 1] - j[h + 1], dz = j[a + 2] - j[h + 2];
+        const d = Math.max(1e-6, Math.hypot(dx, dy, dz)), reach = Math.min(d, l1 + l2 - 1e-7);
+        const ux = dx / d, uy = dy / d, uz = dz / d;
+        const dot = fx * ux + fy * uy;
+        let bx = fx - dot * ux, by = fy - dot * uy, bz = -dot * uz;
+        const b = Math.hypot(bx, by, bz) || 1;
+        bx /= b;
+        by /= b;
+        bz /= b;
+        const along = (l1 * l1 - l2 * l2 + reach * reach) / (2 * reach), bend = Math.sqrt(Math.max(0, l1 * l1 - along * along));
+        this.set(ki, j[h] + ux * along + bx * bend, j[h + 1] + uy * along + by * bend, j[h + 2] + uz * along + bz * bend);
+    }
+}
+
+function pointSegment(px, py, ax, ay, bx, by) {
+    const dx = bx - ax, dy = by - ay, t = clamp(((px - ax) * dx + (py - ay) * dy) / Math.max(1e-12, dx * dx + dy * dy));
+    return (px - ax - t * dx) ** 2 + (py - ay - t * dy) ** 2;
+}
+function segmentDistanceSquared(ax, ay, bx, by, cx, cy, dx, dy) {
+    const abx = bx - ax, aby = by - ay, cdx = dx - cx, cdy = dy - cy, den = abx * cdy - aby * cdx;
+    if (Math.abs(den) > 1e-10) {
+        const t = ((cx - ax) * cdy - (cy - ay) * cdx) / den, u = ((cx - ax) * aby - (cy - ay) * abx) / den;
+        if (t >= 0 && t <= 1 && u >= 0 && u <= 1)
+            return 0;
+    }
+    return Math.min(pointSegment(ax, ay, cx, cy, dx, dy), pointSegment(bx, by, cx, cy, dx, dy), pointSegment(cx, cy, ax, ay, bx, by), pointSegment(dx, dy, ax, ay, bx, by));
+}
+// A conservative sole capsule includes the heel, toe, and lateral shoe edge.
+function soleCapsule(p, f, out, x = f.x, y = f.y, yaw = f.yaw) {
+    const radius = p.shoeWidth * .58, heel = -p.shoeLength * .47 + radius, toe = p.shoeLength * .60 - radius;
+    const fx = Math.cos(yaw), fy = Math.sin(yaw);
+    out[0] = x + fx * heel;
+    out[1] = y + fy * heel;
+    out[2] = x + fx * toe;
+    out[3] = y + fy * toe;
+    out[4] = radius;
+    return out;
+}
+function capsuleGap(a, b) { return Math.sqrt(segmentDistanceSquared(a[0], a[1], a[2], a[3], b[0], b[1], b[2], b[3])) - a[4] - b[4]; }
+const bodyClearance = (a, b) => 1.02 * (a.scale + b.scale) * .5;
+function figureEnvelope(p, camera, out, x = p.x, y = p.y) {
+    const k = camera.distance / (camera.distance + p.height + .12);
+    out[0] = x;
+    out[1] = y;
+    out[2] = camera.eyeX + (x - camera.eyeX) * k;
+    out[3] = camera.eyeY + (y - camera.eyeY) * k;
+    // Covers actual foot reach, arms, body diffusion, and the perspective offset
+    // toward the camera's vanishing point, rather than only a disc at the hips.
+    out[4] = .65 * p.scale;
+    return out;
+}
+const viewA = new Float64Array(5), viewB = new Float64Array(5);
+function figureGap(p, q, camera, px = p.x, py = p.y, qx = q.x, qy = q.y) {
+    return capsuleGap(figureEnvelope(p, camera, viewA, px, py), figureEnvelope(q, camera, viewB, qx, qy));
+}
+function inTriangle(x, y, p, a, b, c) {
+    const ax = p[a], ay = p[a + 1], bx = p[b], by = p[b + 1], cx = p[c], cy = p[c + 1];
+    const area = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+    if (Math.abs(area) < 1e-10)
+        return false;
+    const u = ((bx - x) * (cy - y) - (by - y) * (cx - x)) / area;
+    const v = ((cx - x) * (ay - y) - (cy - y) * (ax - x)) / area;
+    return u >= 0 && v >= 0 && u + v <= 1;
+}
+function insideHull(x, y, p) {
+    if (p.length === 13) {
+        for (let a = 0; a < 12; a += 2)
+            for (let b = a + 2; b < 12; b += 2)
+                for (let c = b + 2; c < 12; c += 2)
+                    if (inTriangle(x, y, p, a, b, c))
+                        return true;
+        return false;
+    }
+    return inTriangle(x, y, p, 0, 2, 4) || inTriangle(x, y, p, 0, 2, 6) || inTriangle(x, y, p, 0, 4, 6) || inTriangle(x, y, p, 2, 4, 6);
+}
+function sweepGap(a, b) {
+    const an = (a.length - 1) / 2, bn = (b.length - 1) / 2, radius = a[a.length - 1] + b[b.length - 1];
+    for (let i = 0; i < an * 2; i += 2)
+        if (insideHull(a[i], a[i + 1], b))
+            return -radius;
+    for (let i = 0; i < bn * 2; i += 2)
+        if (insideHull(b[i], b[i + 1], a))
+            return -radius;
+    let distance = Infinity;
+    // All six edges of four points include the convex hull boundary. Interior
+    // diagonals are harmless and avoid allocating/sorting a polygon per step.
+    for (let i = 0; i < an; i++)
+        for (let j = i + 1; j < an; j++)
+            for (let k = 0; k < bn; k++)
+                for (let l = k + 1; l < bn; l++) {
+                    distance = Math.min(distance, segmentDistanceSquared(a[i * 2], a[i * 2 + 1], a[j * 2], a[j * 2 + 1], b[k * 2], b[k * 2 + 1], b[l * 2], b[l * 2 + 1]));
+                    if (distance === 0)
+                        return -radius;
+                }
+    return Math.sqrt(distance) - radius;
+}
+class StepReservations {
+    people;
+    a = new Float64Array(5);
+    b = new Float64Array(5);
+    ownSweep = new Float64Array(9);
+    otherSweep = new Float64Array(9);
+    ownCurve = new Float64Array(13);
+    otherCurve = new Float64Array(13);
+    activeSweep = this.ownSweep;
+    curvePadding = 0;
+    startSole = new Float64Array(9);
+    endSole = new Float64Array(9);
+    otherFigure = new Float64Array(9);
+    figure = new Float64Array(5);
+    camera;
+    constructor(people = []) {
+        this.people = people;
+    }
+    sweep(p, f, x, y, yaw, out, sx = f.x, sy = f.y, syaw = f.yaw, viaX, viaY) {
+        const a = soleCapsule(p, f, this.a, sx, sy, syaw), b = soleCapsule(p, f, this.b, x, y, yaw);
+        out[0] = a[0];
+        out[1] = a[1];
+        out[2] = a[2];
+        out[3] = a[3];
+        out[4] = b[0];
+        out[5] = b[1];
+        out[6] = b[2];
+        out[7] = b[3];
+        if (viaX !== undefined && viaY !== undefined) {
+            const control = soleCapsule(p, f, this.a, viaX, viaY, syaw + Math.atan2(Math.sin(yaw - syaw), Math.cos(yaw - syaw)) * .5);
+            out[8] = control[0];
+            out[9] = control[1];
+            out[10] = control[2];
+            out[11] = control[3];
+        }
+        out[out.length - 1] = p.shoeWidth * .58 + .008;
+    }
+    staticSole(p, f, x, y, yaw, out) {
+        const a = soleCapsule(p, f, this.a, x, y, yaw);
+        out[0] = out[4] = a[0];
+        out[1] = out[5] = a[1];
+        out[2] = out[6] = a[2];
+        out[3] = out[7] = a[3];
+        out[8] = a[4] + .008;
+    }
+    clearPath(other, required) {
+        const baseline = sweepGap(this.startSole, other), gap = sweepGap(this.activeSweep, other);
+        if (baseline >= required)
+            return gap >= required;
+        // A close but separate foot may leave its current margin, provided the
+        // whole path preserves separation and the landing restores full clearance.
+        return gap >= Math.max(.003, baseline - 1e-7) && sweepGap(this.endSole, other) >= required;
+    }
+    canStep = (p, f, x, y, yaw, viaX, viaY) => {
+        this.curvePadding = 0;
+        if (viaX === undefined || viaY === undefined)
+            return this.canSegment(p, f, f.x, f.y, f.yaw, x, y, yaw);
+        // Check the swept arc itself. Its full convex hull includes the shortcut
+        // across a standing shoe and can incorrectly forbid walking around it.
+        const segments = 8, angle = Math.atan2(Math.sin(yaw - f.yaw), Math.cos(yaw - f.yaw));
+        this.curvePadding = Math.hypot(f.x - 2 * viaX + x, f.y - 2 * viaY + y) / (4 * segments * segments) + p.shoeLength * angle * angle / (8 * segments * segments);
+        let sx = f.x, sy = f.y, syaw = f.yaw;
+        for (let i = 1; i <= segments; i++) {
+            const u = i / segments, nx = (1 - u) ** 2 * f.x + 2 * (1 - u) * u * viaX + u * u * x, ny = (1 - u) ** 2 * f.y + 2 * (1 - u) * u * viaY + u * u * y, nyaw = f.yaw + angle * u;
+            if (!this.canSegment(p, f, sx, sy, syaw, nx, ny, nyaw)) {
+                this.curvePadding = 0;
+                return false;
+            }
+            sx = nx;
+            sy = ny;
+            syaw = nyaw;
+        }
+        this.curvePadding = 0;
+        return true;
+    };
+    canSegment(p, f, sx, sy, syaw, x, y, yaw, viaX, viaY) {
+        // A quadratic turn lies inside its start/control/end hull. Reserve that
+        // entire hull, including its interior, rather than two stopping segments.
+        const own = viaX === undefined ? this.ownSweep : this.ownCurve, other = this.otherSweep;
+        this.activeSweep = own;
+        this.sweep(p, f, x, y, yaw, own, sx, sy, syaw, viaX, viaY);
+        own[own.length - 1] += this.curvePadding;
+        this.staticSole(p, f, sx, sy, syaw, this.startSole);
+        this.staticSole(p, f, x, y, yaw, this.endSole);
+        for (const q of this.people) {
+            if (q === p) {
+                // A turning step must stay on its own side of the supporting leg.
+                const support = q.feet[f.side === -1 ? 1 : 0];
+                this.sweep(q, support, support.x, support.y, support.yaw, other);
+                if (!this.clearPath(other, .018))
+                    return false;
+                continue;
+            }
+            if (Math.hypot(q.x - p.x, q.y - p.y) > 3.2)
+                continue;
+            if (this.camera) {
+                const a = figureEnvelope(q, this.camera, this.figure), b = this.otherFigure;
+                b[0] = b[4] = a[0];
+                b[1] = b[5] = a[1];
+                b[2] = b[6] = a[2];
+                b[3] = b[7] = a[3];
+                b[8] = a[4] + .04;
+                if (!this.clearPath(b, .04))
+                    return false;
+            }
+            for (const shoe of q.feet) {
+                const moving = shoe.stage === 'swing' || shoe.stage === 'toeoff';
+                const curved = moving && shoe.turning, reserved = curved ? this.otherCurve : other;
+                this.sweep(q, shoe, moving ? shoe.toX : shoe.x, moving ? shoe.toY : shoe.y, moving ? shoe.toYaw : shoe.yaw, reserved, curved ? shoe.fromX : shoe.x, curved ? shoe.fromY : shoe.y, curved ? shoe.fromYaw : shoe.yaw, curved ? shoe.midX : undefined, curved ? shoe.midY : undefined);
+                if (!this.clearPath(reserved, .035))
+                    return false;
+            }
+        }
+        return true;
+    }
+}
+// Resolve all proposed body velocities together, before any root is advanced.
+// Only cancel inward motion: stationary people are never pushed or teleported.
+function constrainCrowdMotion(people, motion, n, dt, camera) {
+    for (let iteration = 0; iteration < 20; iteration++) {
+        let changed = false;
+        for (let i = 0; i < n; i++)
+            for (let j = i + 1; j < n; j++) {
+                const p = people[i], q = people[j], dx = p.x - q.x, dy = p.y - q.y, d = Math.hypot(dx, dy);
+                if (d > 3.2 || d < 1e-9)
+                    continue;
+                const nx = dx / d, ny = dy / d, clear = bodyClearance(p, q);
+                const vp = motion[i * 2] * nx + motion[i * 2 + 1] * ny, vq = motion[j * 2] * nx + motion[j * 2 + 1] * ny;
+                const allowed = -Math.max(0, d - clear - .002) / dt, deficit = allowed - (vp - vq);
+                if (deficit <= 1e-9)
+                    continue;
+                const inwardP = Math.max(0, -vp), inwardQ = Math.max(0, vq), sum = inwardP + inwardQ;
+                if (sum < 1e-12)
+                    continue;
+                const cp = Math.min(inwardP, deficit * inwardP / sum), cq = Math.min(inwardQ, deficit * inwardQ / sum);
+                motion[i * 2] += nx * cp;
+                motion[i * 2 + 1] += ny * cp;
+                motion[j * 2] -= nx * cq;
+                motion[j * 2 + 1] -= ny * cq;
+                changed = true;
+            }
+        for (let k = 0; k < n; k++)
+            if (limitSupportMotion(people[k], dt, motion, k * 2))
+                changed = true;
+        if (!changed)
+            break;
+    }
+    if (camera) {
+        for (let iteration = 0; iteration < 24; iteration++) {
+            let changed = false;
+            for (let i = 0; i < n; i++)
+                for (let j = i + 1; j < n; j++) {
+                    const p = people[i], q = people[j];
+                    if (Math.hypot(p.x - q.x, p.y - q.y) > 3.2)
+                        continue;
+                    const before = figureGap(p, q, camera), margin = Math.min(.075, Math.max(0, before));
+                    const px = motion[i * 2] * dt, py = motion[i * 2 + 1] * dt, qx = motion[j * 2] * dt, qy = motion[j * 2 + 1] * dt;
+                    if (figureGap(p, q, camera, p.x + px, p.y + py, q.x + qx, q.y + qy) >= margin - 1e-9)
+                        continue;
+                    // Project away only the inward component, retaining tangential motion
+                    // so walkers can pass around each other instead of freezing face to face.
+                    const e = .0001;
+                    const gx = (figureGap(p, q, camera, p.x + e, p.y) - figureGap(p, q, camera, p.x - e, p.y)) / (2 * e);
+                    const gy = (figureGap(p, q, camera, p.x, p.y + e) - figureGap(p, q, camera, p.x, p.y - e)) / (2 * e);
+                    const hx = (figureGap(p, q, camera, p.x, p.y, q.x + e, q.y) - figureGap(p, q, camera, p.x, p.y, q.x - e, q.y)) / (2 * e);
+                    const hy = (figureGap(p, q, camera, p.x, p.y, q.x, q.y + e) - figureGap(p, q, camera, p.x, p.y, q.x, q.y - e)) / (2 * e);
+                    const vp = gx * motion[i * 2] + gy * motion[i * 2 + 1], vq = hx * motion[j * 2] + hy * motion[j * 2 + 1];
+                    const inwardP = Math.max(0, -vp), inwardQ = Math.max(0, -vq), sum = inwardP + inwardQ;
+                    const deficit = -(before - margin) / dt - vp - vq;
+                    if (deficit <= 1e-9 || sum < 1e-10)
+                        continue;
+                    const cp = Math.min(inwardP, deficit * inwardP / sum) / Math.max(.01, gx * gx + gy * gy);
+                    const cq = Math.min(inwardQ, deficit * inwardQ / sum) / Math.max(.01, hx * hx + hy * hy);
+                    motion[i * 2] += gx * cp;
+                    motion[i * 2 + 1] += gy * cp;
+                    motion[j * 2] += hx * cq;
+                    motion[j * 2 + 1] += hy * cq;
+                    changed = true;
+                }
+            for (let k = 0; k < n; k++)
+                if (limitSupportMotion(people[k], dt, motion, k * 2))
+                    changed = true;
+            if (!changed)
+                break;
+        }
+    }
+    // A swept-disc fallback catches multi-person constraints at dense junctions.
+    let fraction = 1;
+    for (let i = 0; i < n; i++)
+        for (let j = i + 1; j < n; j++) {
+            const p = people[i], q = people[j], rx = p.x - q.x, ry = p.y - q.y;
+            const dx = (motion[i * 2] - motion[j * 2]) * dt, dy = (motion[i * 2 + 1] - motion[j * 2 + 1]) * dt;
+            const a = dx * dx + dy * dy, b = 2 * (rx * dx + ry * dy), r = bodyClearance(p, q), c = rx * rx + ry * ry - r * r;
+            if (a < 1e-14 || b >= 0)
+                continue;
+            const disc = b * b - 4 * a * c;
+            if (disc < 0)
+                continue;
+            const hit = (-b - Math.sqrt(disc)) / (2 * a);
+            if (hit >= 0 && hit < fraction)
+                fraction = Math.max(0, hit - .0001);
+        }
+    if (fraction < 1)
+        for (let i = 0; i < n * 2; i++)
+            motion[i] *= fraction;
+}
+
+const HEADINGS = [0, .28, .55, .85, 1.18, 1.50, -0.28, -0.55, -0.85, -1.18, -1.5];
+const HORIZONS = [.55, 1.15, 1.9];
+const LANE_SPACING = 2.3, ARRIVAL_SPACING = 3.15, FOLLOWING_DISTANCE = 3.05;
+class Crowd {
+    camera;
+    people = [];
+    random = new Random(88713);
+    time = 0;
+    solo = false;
+    targetCount = 6;
+    autoPopulation = false;
+    randomness = false;
+    nextId = 0;
+    nextRoute = 0;
+    arrivalCheck = 0;
+    cullRig = new Rig();
+    projected = new Float64Array(3);
+    motion = new Float64Array(24);
+    reservations = new StepReservations();
+    preferred = new Float64Array(2);
+    verticalRoutes = new Map();
+    get laneCount() { return this.camera.worldWidth >= 10.7 ? 5 : 3; }
+    get recommendedCount() { return this.randomness ? this.laneCount * 2 + 2 : this.laneCount * 4; }
+    constructor(camera) {
+        this.camera = camera;
+        this.reservations.camera = camera;
+        this.reset();
+    }
+    reset() { this.random = new Random(this.randomness ? 45127 : 88713); this.nextId = 0; this.time = 0; this.people.length = 0; this.verticalRoutes.clear(); this.nextRoute = this.targetCount; this.arrivalCheck = 0; for (let i = 0; i < this.targetCount; i++)
+        this.people.push(this.spawn(i, true)); }
+    spawn(index, initial = false, reuse) {
+        if (this.randomness)
+            return this.spawnRandom(index, initial, reuse);
+        const h = this.camera.worldHeight, r = this.random;
+        // Add parallel lanes as the floor widens, retaining room for whole strides
+        // and for the body shadow projected inward from each outer lane.
+        const lanes = this.laneCount, laneIndex = index % lanes, column = laneIndex - (lanes - 1) / 2;
+        // Lane positions and directions remain consistent through a resize. New
+        // arrivals must never oppose existing walkers in the same physical lane.
+        const direction = column % 2 === 0 ? 1 : -1;
+        const x = column * LANE_SPACING + r.range(-0.025, .025);
+        const extent = h * .56 + 1.4;
+        const rows = Math.ceil(this.targetCount / lanes);
+        let y = initial ? (Math.floor(index / lanes) - (rows - 1) / 2) * ARRIVAL_SPACING + (laneIndex % 2) * .5 : -direction * extent;
+        const gx = x, gy = direction * extent;
+        // Reserve complete figure space before admitting an arrival. A blocked
+        // entrance waits offstage; it must not create a long physical queue whose
+        // projected shadows can obstruct the entrance from outside the viewport.
+        let clear = false;
+        for (let attempt = 0; attempt < (initial ? 256 : 1); attempt++) {
+            const candidate = { x, y, height: 1.91, scale: 1.1 };
+            if (this.people.every(q => q === reuse || figureGap(candidate, q, this.camera) > .18)) {
+                clear = true;
+                break;
+            }
+            y -= direction * .25;
+        }
+        if (!clear)
+            return undefined;
+        const p = createWalker(this.nextId++, x, y, Math.atan2(gy - y, gx - x), r.range(1.61, 1.91));
+        if (reuse)
+            this.verticalRoutes.delete(reuse.id);
+        this.verticalRoutes.set(p.id, direction);
+        p.goalX = gx;
+        p.goalY = gy;
+        p.route = index;
+        p.pace = r.range(.72, .92);
+        p.build = r.range(.85, 1.18);
+        p.shoeWidth *= r.range(.92, 1.12);
+        p.shoeLength *= r.range(.95, 1.08);
+        p.pauseAt = r.range(7, 15);
+        p.pair = index === 0 || index === 2 ? 1 : -1;
+        if (reuse) {
+            Object.assign(reuse, p);
+            return reuse;
+        }
+        return p;
+    }
+    spawnRandom(index, initial, reuse) {
+        const r = this.random, w = this.camera.worldWidth, h = this.camera.worldHeight, margin = 1.8;
+        let x, y, gx, gy;
+        if (initial) {
+            const lanes = this.laneCount, lane = index % lanes, rows = Math.ceil(this.targetCount / lanes);
+            x = (lane - (lanes - 1) / 2) * LANE_SPACING + r.range(-0.025, .025);
+            y = (Math.floor(index / lanes) - (rows - 1) / 2) * ARRIVAL_SPACING + (lane % 2) * .5;
+            let clear = false;
+            for (let attempt = 0; attempt < 256; attempt++) {
+                const candidate = { x, y, height: 1.91, scale: 1.1 };
+                if (this.people.every(q => q === reuse || figureGap(candidate, q, this.camera) > .25)) {
+                    clear = true;
+                    break;
+                }
+                y += (index % 2 ? 1 : -1) * .25;
+            }
+            if (!clear)
+                return undefined;
+            let yaw = Math.floor(r.range(0, 8)) * Math.PI / 4 + r.range(-0.12, .12);
+            if (Math.abs(y) > h * .38 || Math.abs(x) > w * .4)
+                yaw = Math.atan2(-y, -x) + r.range(-0.55, .55);
+            const distance = Math.max(w, h) * 2 + 4;
+            gx = x + Math.cos(yaw) * distance;
+            gy = y + Math.sin(yaw) * distance;
+        }
+        else {
+            const edge = Math.floor(r.range(0, 4));
+            if (edge < 2) {
+                x = (edge === 0 ? -1 : 1) * (w * .5 + margin);
+                y = r.range(-h * .4, h * .4);
+                gx = -x;
+                gy = r.range(-h * .4, h * .4);
+            }
+            else {
+                y = (edge === 2 ? -1 : 1) * (h * .5 + margin);
+                x = r.range(-w * .4, w * .4);
+                gy = -y;
+                gx = r.range(-w * .4, w * .4);
+            }
+            const candidate = { x, y, height: 1.91, scale: 1.1 };
+            if (!this.people.every(q => q === reuse || figureGap(candidate, q, this.camera) > .25))
+                return undefined;
+        }
+        const p = createWalker(this.nextId++, x, y, Math.atan2(gy - y, gx - x), r.range(1.61, 1.91));
+        if (reuse)
+            this.verticalRoutes.delete(reuse.id);
+        p.goalX = gx;
+        p.goalY = gy;
+        p.route = index;
+        p.build = r.range(.85, 1.15);
+        p.pauseAt = r.range(12, 24);
+        const style = Math.floor(r.range(0, 3));
+        if (style === 0) {
+            p.walkStyle = 'Relaxed';
+            p.pace = r.range(.56, .73);
+            p.strideScale = .94;
+            p.cadenceScale = .92;
+            p.liftScale = .95;
+            p.armScale = .78;
+            p.swayScale = .9;
+        }
+        else if (style === 1) {
+            p.walkStyle = 'Brisk';
+            p.pace = r.range(.86, 1.03);
+            p.strideScale = 1.04;
+            p.cadenceScale = 1.10;
+            p.liftScale = 1.08;
+            p.armScale = 1.15;
+            p.swayScale = .85;
+        }
+        else {
+            p.walkStyle = 'Easy';
+            p.pace = r.range(.70, .87);
+            p.strideScale = 1;
+            p.cadenceScale = 1;
+            p.liftScale = 1.02;
+            p.armScale = 1.03;
+            p.swayScale = 1.10;
+        }
+        p.shoeWidth *= r.range(.94, 1.08);
+        p.shoeLength *= r.range(.96, 1.06);
+        if (reuse) {
+            Object.assign(reuse, p);
+            return reuse;
+        }
+        return p;
+    }
+    update(dt) {
+        this.time += dt;
+        const n = this.people.length;
+        if (this.motion.length < n * 2)
+            this.motion = new Float64Array(n * 2);
+        for (let i = 0; i < n; i++) {
+            const p = this.people[i];
+            let dx = p.goalX - p.x, dy = p.goalY - p.y, d = Math.hypot(dx, dy);
+            if (d < .45) {
+                p.exiting = true;
+                // Keep the same exit direction until the entire projected body leaves.
+                // A resize must not strand a walker at an old, now-visible destination.
+                const extension = Math.max(this.camera.worldWidth, this.camera.worldHeight) + 2;
+                p.goalX += (d > 1e-6 ? dx / d : Math.cos(p.yaw)) * extension;
+                p.goalY += (d > 1e-6 ? dy / d : Math.sin(p.yaw)) * extension;
+                dx = p.goalX - p.x;
+                dy = p.goalY - p.y;
+                d = Math.hypot(dx, dy) || 1;
+            }
+            if (p.age > p.pauseAt && !p.pausedOnce && p.route % 3 === 1) {
+                p.pauseFor = 1.6;
+                p.pausedOnce = true;
+            }
+            if (p.pauseFor > 0) {
+                p.pauseFor -= dt;
+                p.desiredX = 0;
+                p.desiredY = 0;
+            }
+            else {
+                this.chooseVelocity(p, n, dx / d, dy / d);
+                p.desiredX = this.preferred[0];
+                p.desiredY = this.preferred[1];
+            }
+            gaitVelocity(p, dt, this.motion, i * 2);
+        }
+        constrainCrowdMotion(this.people, this.motion, n, dt, this.camera);
+        // Lane traffic has one degree of freedom. Reach corrections may slow a
+        // stride, but must not turn into a lateral dodge when following gets tight.
+        for (let i = 0; i < n; i++) {
+            const p = this.people[i];
+            if (!this.verticalRoutes.has(p.id))
+                continue;
+            this.motion[i * 2] = 0;
+            for (const f of p.feet) {
+                if (!f.planted || (f.stage === 'toeoff' && f.load < .12))
+                    continue;
+                const reach = Math.max(.52 * p.scale, Math.hypot(p.x - f.ax, p.y - f.ay));
+                const along = Math.sqrt(Math.max(0, reach * reach - (p.x - f.ax) ** 2));
+                this.motion[i * 2 + 1] = clamp(this.motion[i * 2 + 1], (f.ay - along - p.y) / dt, (f.ay + along - p.y) / dt);
+            }
+        }
+        this.reservations.people = this.people;
+        // Alternate deterministic planning priority to avoid starving a waiting step.
+        const first = Math.floor(this.time * .7) % Math.max(1, n);
+        const retire = [];
+        for (let k = 0; k < n; k++) {
+            const i = (k + first) % n, p = this.people[i];
+            updateGait(p, dt, this.reservations.canStep, this.motion, i * 2);
+            const offscreen = this.outsideFrame(p);
+            if (!offscreen)
+                p.hasBeenVisible = true;
+            // Recycle only when every projected joint, body radius, and both shoes
+            // have left the glass. New arrivals keep their persistent destination.
+            if (p.age > 3 && offscreen && (p.hasBeenVisible || p.exiting)) {
+                if (this.people.length - retire.length > this.targetCount)
+                    retire.push(i);
+                else
+                    this.spawn(p.route, false, p);
+            }
+        }
+        for (const i of retire.sort((a, b) => b - a)) {
+            this.verticalRoutes.delete(this.people[i].id);
+            this.people.splice(i, 1);
+        }
+        if (this.autoPopulation && this.people.length < this.targetCount && this.time >= this.arrivalCheck) {
+            this.arrivalCheck = this.time + .25;
+            const lanes = this.laneCount;
+            const entries = Array.from({ length: lanes }, (_, lane) => ({ lane, count: this.people.filter(p => Math.abs(p.x - (lane - (lanes - 1) / 2) * LANE_SPACING) < .75).length }));
+            for (const { lane } of entries.sort((a, b) => a.count - b.count)) {
+                const route = this.nextRoute + (lane - this.nextRoute % lanes + lanes) % lanes;
+                const arrival = this.spawn(route, false);
+                if (arrival) {
+                    this.people.push(arrival);
+                    this.nextRoute = route + 1;
+                    break;
+                }
+            }
+        }
+    }
+    chooseVelocity(p, n, fx, fy) {
+        const vertical = this.verticalRoutes.get(p.id);
+        if (vertical !== undefined) {
+            let pace = p.pace;
+            // Follow a slower or paused person in the same lane instead of choosing
+            // a diagonal passing route. The shared collision solver still checks feet.
+            for (let j = 0; j < n; j++) {
+                const q = this.people[j], ahead = (q.y - p.y) * vertical;
+                if (q === p || ahead <= 0 || Math.abs(q.x - p.x) > .75)
+                    continue;
+                pace = Math.min(pace, Math.max(0, q.vy * vertical) + Math.max(0, ahead - FOLLOWING_DISTANCE) * .8);
+            }
+            this.preferred[0] = 0;
+            this.preferred[1] = vertical * pace;
+            return;
+        }
+        if (p.turnHoldFor > 0 && p.turnYaw === null) {
+            this.preferred[0] = Math.cos(p.turnHoldYaw) * p.pace * .60;
+            this.preferred[1] = Math.sin(p.turnHoldYaw) * p.pace * .60;
+            return;
+        }
+        if (p.turnYaw !== null) {
+            if (Math.abs(Math.atan2(Math.sin(p.turnYaw - p.yaw), Math.cos(p.turnYaw - p.yaw))) < .18) {
+                p.turnHoldYaw = p.turnYaw;
+                p.turnHoldFor = 1.6;
+                p.turnYaw = null;
+                this.preferred[0] = Math.cos(p.turnHoldYaw) * p.pace * .60;
+                this.preferred[1] = Math.sin(p.turnHoldYaw) * p.pace * .60;
+                return;
+            }
+            else {
+                this.preferred[0] = Math.cos(p.turnYaw) * .13;
+                this.preferred[1] = Math.sin(p.turnYaw) * .13;
+                return;
+            }
+        }
+        const goalYaw = Math.atan2(fy, fx);
+        let best = Infinity, bx = 0, by = 0, bestSide = p.avoidSide;
+        const headingError = Math.atan2(Math.sin(goalYaw - p.yaw), Math.cos(goalYaw - p.yaw));
+        if (Math.abs(headingError) < .35) {
+            let clear = true;
+            for (let j = 0; j < n && clear; j++) {
+                const q = this.people[j];
+                if (q === p || Math.hypot(p.x - q.x, p.y - q.y) > 3.7)
+                    continue;
+                for (const t of HORIZONS)
+                    if (figureGap(p, q, this.camera, p.x + fx * p.pace * t, p.y + fy * p.pace * t, q.x + q.vx * t, q.y + q.vy * t) < .27) {
+                        clear = false;
+                        break;
+                    }
+            }
+            if (clear) {
+                this.preferred[0] = fx * p.pace;
+                this.preferred[1] = fy * p.pace;
+                return;
+            }
+        }
+        for (let option = 0; option <= HEADINGS.length * 2; option++) {
+            const stop = option === HEADINGS.length * 2, offset = stop ? 0 : HEADINGS[Math.floor(option / 2)], yaw = goalYaw + offset;
+            const turn = Math.atan2(Math.sin(yaw - p.yaw), Math.cos(yaw - p.yaw));
+            const pace = stop ? 0 : p.pace * (option % 2 === 0 ? 1 : .48) * (.28 + .72 * Math.max(0, Math.cos(turn)));
+            const vx = Math.cos(yaw) * pace, vy = Math.sin(yaw) * pace;
+            let cost = stop ? .75 : -(vx * fx + vy * fy) * 2.2 + Math.abs(offset) * .12 + (offset * p.avoidSide < 0 ? .80 : 0) + Math.hypot(vx - p.desiredX, vy - p.desiredY) * .12;
+            for (let j = 0; j < n; j++) {
+                const q = this.people[j];
+                if (q === p || Math.hypot(p.x - q.x, p.y - q.y) > 3.7)
+                    continue;
+                const now = figureGap(p, q, this.camera), required = Math.min(.22, Math.max(.075, now));
+                let furthest = now;
+                for (const t of HORIZONS) {
+                    const gap = figureGap(p, q, this.camera, p.x + vx * t, p.y + vy * t, q.x + q.vx * t, q.y + q.vy * t);
+                    if (gap < required)
+                        cost += (required - gap) * (gap < 0 ? 60 : 16) * (t < 1 ? 1.8 : 1);
+                    furthest = Math.max(furthest, gap);
+                }
+                if (p.stillFor > 1)
+                    cost -= Math.min(.65, p.stillFor * .07) * Math.min(1.5, furthest - now);
+            }
+            if (cost < best) {
+                best = cost;
+                bx = vx;
+                by = vy;
+                bestSide = Math.abs(offset) > .50 ? Math.sign(offset) : p.avoidSide;
+            }
+        }
+        this.preferred[0] = bx;
+        this.preferred[1] = by;
+        p.avoidSide = bestSide;
+        if (p.speed < .08 && Math.hypot(bx, by) > .05 && Math.abs(Math.atan2(Math.sin(Math.atan2(by, bx) - p.yaw), Math.cos(Math.atan2(by, bx) - p.yaw))) > .70)
+            p.turnYaw = Math.atan2(by, bx);
+    }
+    outsideFrame(p) {
+        const j = this.cullRig.update(p), q = this.projected, c = this.camera;
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        for (let i = 0; i < 16; i++) {
+            c.project(j[i * 3], j[i * 3 + 1], j[i * 3 + 2], q);
+            const radius = .21 * p.scale * c.scale * c.distance / (c.distance + j[i * 3 + 2]);
+            minX = Math.min(minX, q[0] - radius);
+            maxX = Math.max(maxX, q[0] + radius);
+            minY = Math.min(minY, q[1] - radius);
+            maxY = Math.max(maxY, q[1] + radius);
+        }
+        for (const f of p.feet) {
+            c.project(f.x, f.y, f.z, q);
+            const r = p.shoeLength * c.scale * .8;
+            minX = Math.min(minX, q[0] - r);
+            maxX = Math.max(maxX, q[0] + r);
+            minY = Math.min(minY, q[1] - r);
+            maxY = Math.max(maxY, q[1] + r);
+        }
+        return maxX < -8 || maxY < -8 || minX > c.width + 8 || minY > c.height + 8;
+    }
+    get visiblePeople() { return this.solo ? this.people.slice(0, 1) : this.people; }
+}
+
+// Optical-density bands are mixed continuously in height before filtering.
+// The z buffers resolve local surface overlap; translucent layers compose by
+// transmission, with the undiffused contact band always nearest the camera.
+class OpticalField {
+    width = 1;
+    height = 1;
+    pixel = 2.7;
+    size = 1;
+    centers = [0, 0.065, 0.19, 0.46, 0.95, 1.65];
+    radii = [0, 0.55, 1.35, 2.5, 4.6, 7.0];
+    bands = [];
+    depths = [];
+    scratch = new Float32Array(1);
+    filtered = new Float32Array(1);
+    density = new Float32Array(1);
+    resize(w, h, small = false, qualityScale = 1) {
+        this.pixel = (small ? 2.5 : 3.1) * qualityScale;
+        this.width = Math.ceil(w / this.pixel);
+        this.height = Math.ceil(h / this.pixel);
+        this.size = this.width * this.height;
+        this.bands = this.centers.map(() => new Float32Array(this.size));
+        this.depths = this.centers.map(() => new Float32Array(this.size));
+        this.scratch = new Float32Array(this.size);
+        this.filtered = new Float32Array(this.size);
+        this.density = new Float32Array(this.size);
+    }
+    clear() { for (let i = 0; i < this.bands.length; i++) {
+        this.bands[i].fill(0);
+        this.depths[i].fill(Infinity);
+    } this.density.fill(0); }
+    deposit(index, z, value) {
+        let band = 0;
+        while (band < this.centers.length - 2 && z > this.centers[band + 1])
+            band++;
+        const mix = clamp((z - this.centers[band]) / (this.centers[band + 1] - this.centers[band]));
+        this.write(band, index, z, value * (1 - mix));
+        this.write(band + 1, index, z, value * mix);
+    }
+    write(band, index, z, value) {
+        if (value < .001)
+            return;
+        const depth = this.depths[band][index];
+        if (z < depth - .025) {
+            this.depths[band][index] = z;
+            this.bands[band][index] = value;
+        }
+        else if (z < depth + .025) {
+            this.depths[band][index] = Math.min(z, depth);
+            this.bands[band][index] = Math.max(value, this.bands[band][index]);
+        }
+    }
+    compose(diffusion, showBands = false) {
+        for (let b = this.bands.length - 1; b >= 0; b--) {
+            const radius = this.radii[b] * diffusion * 2.7 / this.pixel;
+            const source = this.bands[b];
+            if (radius > .25) {
+                // Small kernels use a separable box. Broad body diffusion gets a second
+                // pair for a Gaussian approximation, keeping contact detail inexpensive.
+                const r = Math.max(1, Math.round(radius * (b < 4 ? .9 : .68)));
+                this.box(source, this.scratch, r, true);
+                this.box(this.scratch, this.filtered, r, false);
+                if (b >= 4) {
+                    this.box(this.filtered, this.scratch, r, true);
+                    this.box(this.scratch, this.filtered, r, false);
+                }
+            }
+            const filtered = radius > .25 ? this.filtered : source, d = this.density;
+            const weight = showBands ? 1 + (b % 2) * .8 : 1;
+            for (let i = 0; i < this.size; i++) {
+                const v = clamp(filtered[i] * weight);
+                d[i] = 1 - (1 - d[i]) * (1 - v);
+            }
+        }
+    }
+    box(src, dst, r, horizontal) {
+        const w = this.width, h = this.height, span = 2 * r + 1;
+        if (horizontal) {
+            for (let y = 0; y < h; y++) {
+                const row = y * w;
+                let sum = 0;
+                for (let x = -r; x <= r; x++)
+                    sum += src[row + clamp(x, 0, w - 1)];
+                for (let x = 0; x < w; x++) {
+                    dst[row + x] = sum / span;
+                    sum += src[row + Math.min(w - 1, x + r + 1)] - src[row + Math.max(0, x - r)];
+                }
+            }
+        }
+        else {
+            for (let x = 0; x < w; x++) {
+                let sum = 0;
+                for (let y = -r; y <= r; y++)
+                    sum += src[clamp(y, 0, h - 1) * w + x];
+                for (let y = 0; y < h; y++) {
+                    dst[y * w + x] = sum / span;
+                    sum += src[Math.min(h - 1, y + r + 1) * w + x] - src[Math.max(0, y - r) * w + x];
+                }
+            }
+        }
+    }
+    sample(x, y) {
+        const fx = clamp(x / this.pixel, 0, this.width - 1.001), fy = clamp(y / this.pixel, 0, this.height - 1.001);
+        const ix = Math.floor(fx), iy = Math.floor(fy), u = fx - ix, v = fy - iy, i = iy * this.width + ix, d = this.density;
+        return lerp(lerp(d[i], d[i + 1], u), lerp(d[i + this.width], d[i + this.width + 1], u), v);
+    }
+}
+
+const SHOE_OUTLINE = [[-0.32, -0.43], [-0.48, -0.34], [-0.48, -0.18], [-0.35, .02], [-0.49, .22], [-0.48, .42], [-0.32, .54], [-0.08, .57], [.2, .55], [.43, .47], [.49, .29], [.43, .09], [.31, -0.05], [.40, -0.25], [.36, -0.38], [.13, -0.44]];
+
+const LIMBS = [[4, 5, .084], [5, 6, .057], [7, 8, .084], [8, 9, .057], [10, 11, .055], [11, 12, .043], [13, 14, .055], [14, 15, .043]];
+class Renderer {
+    canvas;
+    camera;
+    context;
+    field = new OpticalField();
+    rigs = Array.from({ length: 10 }, () => new Rig());
+    background = document.createElement('canvas');
+    bgctx = this.background.getContext('2d');
+    atlas = document.createElement('canvas');
+    atlasCtx = this.atlas.getContext('2d', { willReadFrequently: true });
+    glyphs = ['.', ':', ';', 'o', 'O', '0', '8', '@'];
+    coverage = [];
+    cellX = 4.6;
+    cellY = 5.8;
+    cols = 1;
+    rows = 1;
+    history = new Int8Array(1);
+    previousDensity = new Float32Array(1);
+    projected = new Float64Array(3);
+    shoeWorld = new Float64Array(17 * 5);
+    shoeScreen = new Float64Array(17 * 5);
+    point = new Float64Array(3);
+    dpr = 1;
+    width = 1;
+    height = 1;
+    frameCost = 0;
+    performanceMode = false;
+    tileCols = 1;
+    tileRows = 1;
+    occupiedTiles = new Uint8Array(1);
+    activeTiles = new Uint8Array(1);
+    constructor(canvas, camera) {
+        this.canvas = canvas;
+        this.camera = camera;
+        this.context = canvas.getContext('2d', { alpha: false });
+        this.createAtlas();
+    }
+    resize(w, h) {
+        this.performanceMode = false;
+        this.width = w;
+        this.height = h;
+        this.dpr = Math.min(window.devicePixelRatio || 1, 2);
+        this.canvas.width = Math.round(w * this.dpr);
+        this.canvas.height = Math.round(h * this.dpr);
+        this.context.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+        this.context.imageSmoothingEnabled = false;
+        this.camera.resize(w, h);
+        this.field.resize(w, h, w < 600, this.performanceMode ? 1.25 : 1);
+        this.cellX = w < 600 ? 3.8 : 4.6;
+        this.cellY = w < 600 ? 5.0 : 5.8;
+        this.cols = Math.ceil(w / this.cellX);
+        this.rows = Math.ceil(h / this.cellY);
+        this.tileCols = Math.ceil(this.cols / 4);
+        this.tileRows = Math.ceil(this.rows / 3);
+        this.occupiedTiles = new Uint8Array(this.tileCols * this.tileRows);
+        this.activeTiles = new Uint8Array(this.occupiedTiles.length);
+        this.history = new Int8Array(this.cols * this.rows);
+        this.history.fill(-1);
+        this.previousDensity = new Float32Array(this.history.length);
+        this.createBackground();
+        this.createAtlas();
+    }
+    setPerformanceMode() {
+        if (this.performanceMode)
+            return;
+        this.performanceMode = true;
+        this.field.resize(this.width, this.height, this.width < 600, 1.25);
+    }
+    createAtlas() {
+        const dpr = this.dpr, slot = 14;
+        this.atlas.width = slot * this.glyphs.length * dpr;
+        this.atlas.height = slot * 2 * dpr;
+        const a = this.atlasCtx;
+        a.setTransform(dpr, 0, 0, dpr, 0, 0);
+        a.clearRect(0, 0, this.atlas.width, this.atlas.height);
+        a.font = `${this.cellY + 2.2}px 'Courier New',monospace`;
+        a.textAlign = 'center';
+        a.textBaseline = 'middle';
+        for (let row = 0; row < 2; row++) {
+            a.fillStyle = row === 0 ? '#162c38' : '#5a7688';
+            for (let i = 0; i < this.glyphs.length; i++)
+                a.fillText(this.glyphs[i], i * slot + slot / 2, row * slot + slot / 2);
+        }
+        this.coverage.length = 0;
+        for (let i = 0; i < this.glyphs.length; i++) {
+            const pixels = a.getImageData(i * slot * dpr, 0, slot * dpr, slot * dpr).data;
+            let sum = 0;
+            for (let p = 3; p < pixels.length; p += 4)
+                sum += pixels[p] / 255;
+            this.coverage.push(sum / (dpr * dpr * this.cellX * this.cellY));
+        }
+        // Measured ink coverage gives stable tone thresholds even across DPI/font engines.
+        const max = Math.max(...this.coverage);
+        for (let i = 0; i < this.coverage.length; i++)
+            this.coverage[i] /= max;
+    }
+    createBackground() {
+        const w = this.width, h = this.height, d = this.dpr;
+        this.background.width = w * d;
+        this.background.height = h * d;
+        const c = this.bgctx;
+        c.setTransform(d, 0, 0, d, 0, 0);
+        c.fillStyle = '#e8eff2';
+        c.fillRect(0, 0, w, h);
+        const shade = c.createRadialGradient(w * .43, h * .4, 0, w * .5, h * .5, Math.max(w, h) * .75);
+        shade.addColorStop(0, '#f4f7f64d');
+        shade.addColorStop(1, '#bbd1df30');
+        c.fillStyle = shade;
+        c.fillRect(0, 0, w, h);
+        // Static illuminated joints: a quiet halo with a narrow continuous core.
+        const vx = w * .54, hy = [h * .26, h * .74];
+        const seam = (pos, vertical) => {
+            const radius = vertical ? 37 : 28;
+            const g = vertical ? c.createLinearGradient(pos - radius, 0, pos + radius, 0) : c.createLinearGradient(0, pos - radius, 0, pos + radius);
+            g.addColorStop(0, '#e8b66b00');
+            g.addColorStop(.3, '#e8b66b0a');
+            g.addColorStop(.46, '#e99d4125');
+            g.addColorStop(.5, '#eaa45644');
+            g.addColorStop(.54, '#e99d4125');
+            g.addColorStop(.7, '#e8b66b0a');
+            g.addColorStop(1, '#e8b66b00');
+            c.fillStyle = g;
+            if (vertical)
+                c.fillRect(pos - radius, 0, radius * 2, h);
+            else
+                c.fillRect(0, pos - radius, w, radius * 2);
+            c.strokeStyle = vertical ? '#d85e3eb5' : '#d99b54a6';
+            c.lineWidth = vertical ? 1.3 : .8;
+            c.beginPath();
+            if (vertical) {
+                c.moveTo(pos, 0);
+                c.lineTo(pos, h);
+            }
+            else {
+                c.moveTo(0, pos);
+                c.lineTo(w, pos);
+            }
+            c.stroke();
+            c.strokeStyle = '#fff5d9ba';
+            c.lineWidth = .55;
+            c.beginPath();
+            if (vertical) {
+                c.moveTo(pos + 1.1, 0);
+                c.lineTo(pos + 1.1, h);
+            }
+            else {
+                c.moveTo(0, pos + .8);
+                c.lineTo(w, pos + .8);
+            }
+            c.stroke();
+        };
+        seam(vx, true);
+        for (const y of hy)
+            seam(y, false);
+        c.fillStyle = '#607f9733';
+        c.beginPath();
+        const spacing = this.width < 600 ? 5.6 : 6.4;
+        for (let y = 2.7; y < h; y += spacing)
+            for (let x = 2.7; x < w; x += spacing) {
+                c.moveTo(x + .43, y);
+                c.arc(x, y, .43, 0, Math.PI * 2);
+            }
+        c.fill();
+        c.strokeStyle = '#75919e19';
+        c.lineWidth = 1;
+        c.strokeRect(12.5, 12.5, w - 25, h - 25);
+    }
+    render(people, alpha, options) {
+        const start = performance.now(), f = this.field;
+        f.clear();
+        while (this.rigs.length < people.length)
+            this.rigs.push(new Rig());
+        for (let i = 0; i < people.length; i++) {
+            const p = people[i], rig = this.rigs[i];
+            rig.update(p, alpha);
+            const j = rig.joints;
+            for (let k = 0; k < 16; k++)
+                this.camera.project(j[k * 3], j[k * 3 + 1], j[k * 3 + 2], rig.projected, k * 3);
+            for (const [a, b, r] of LIMBS)
+                this.capsule(rig, a, b, r * p.scale * p.build, options.frosted ? .47 : .74);
+            this.capsule(rig, 0, 1, .155 * p.scale * p.build, options.frosted ? .49 : .82);
+            this.capsule(rig, 1, 2, .13 * p.scale * p.build, options.frosted ? .44 : .8);
+            this.capsule(rig, 2, 3, .09 * p.scale, options.frosted ? .38 : .75);
+            this.capsule(rig, 3, 3, .107 * p.scale, options.frosted ? .43 : .8);
+            this.capsule(rig, 12, 12, .045 * p.scale, options.frosted ? .44 : .7);
+            this.capsule(rig, 15, 15, .045 * p.scale, options.frosted ? .44 : .7);
+            for (let foot = 0; foot < 2; foot++)
+                this.shoe(p, foot, alpha, options.frosted);
+        }
+        f.compose(options.frosted ? options.diffusion : 0, options.bands);
+        const c = this.context;
+        c.globalAlpha = 1;
+        c.drawImage(this.background, 0, 0, this.background.width, this.background.height, 0, 0, this.width, this.height);
+        this.ascii();
+        if (options.skeleton || options.anchors || options.projection)
+            this.debug(people, options);
+        this.frameCost = lerp(this.frameCost, performance.now() - start, .06);
+    }
+    capsule(rig, a, b, radius, opacity) {
+        const j = rig.joints, q = rig.projected, f = this.field, px = f.pixel;
+        const ax = q[a * 3] / px, ay = q[a * 3 + 1] / px, bx = q[b * 3] / px, by = q[b * 3 + 1] / px;
+        const az = j[a * 3 + 2], bz = j[b * 3 + 2];
+        const r0 = radius * this.camera.scale * this.camera.distance / (this.camera.distance + az) / px;
+        const r1 = radius * this.camera.scale * this.camera.distance / (this.camera.distance + bz) / px;
+        const r = Math.max(r0, r1), x0 = Math.max(0, Math.floor(Math.min(ax, bx) - r - 1)), x1 = Math.min(f.width - 1, Math.ceil(Math.max(ax, bx) + r + 1));
+        const y0 = Math.max(0, Math.floor(Math.min(ay, by) - r - 1)), y1 = Math.min(f.height - 1, Math.ceil(Math.max(ay, by) + r + 1));
+        const dx = bx - ax, dy = by - ay, dist = dx * dx + dy * dy;
+        for (let y = y0; y <= y1; y++)
+            for (let x = x0; x <= x1; x++) {
+                const t = dist > 0 ? clamp(((x + .5 - ax) * dx + (y + .5 - ay) * dy) / dist) : 0;
+                const rr = lerp(r0, r1, t), dd = Math.hypot(x + .5 - ax - dx * t, y + .5 - ay - dy * t), coverage = clamp(rr - dd + .65);
+                if (coverage <= 0)
+                    continue;
+                const z = Math.max(.07, lerp(az, bz, t) - radius * Math.sqrt(Math.max(0, 1 - (dd / rr) ** 2)));
+                f.deposit(y * f.width + x, z, opacity * Math.exp(-z * .69) * coverage);
+            }
+    }
+    shoe(p, footIndex, alpha, frosted) {
+        const foot = p.feet[footIndex], len = p.shoeLength, width = p.shoeWidth, w = this.shoeWorld, s = this.shoeScreen;
+        for (let i = 0; i <= SHOE_OUTLINE.length; i++) {
+            const u = i === 0 ? 0 : SHOE_OUTLINE[i - 1][0] * width * (foot.side === -1 ? -1 : 1), v = i === 0 ? .03 * len : SHOE_OUTLINE[i - 1][1] * len;
+            shoePoint(foot, len, u, v, alpha, this.point);
+            const at = i * 5;
+            w[at] = this.point[0];
+            w[at + 1] = this.point[1];
+            w[at + 2] = this.point[2];
+            w[at + 3] = u;
+            w[at + 4] = v;
+            this.camera.project(w[at], w[at + 1], w[at + 2], this.projected);
+            s[at] = this.projected[0] / this.field.pixel;
+            s[at + 1] = this.projected[1] / this.field.pixel;
+            s[at + 2] = w[at + 2];
+            s[at + 3] = u;
+            s[at + 4] = v;
+        }
+        for (let i = 1; i <= SHOE_OUTLINE.length; i++)
+            this.triangle(0, i, i === SHOE_OUTLINE.length ? 1 : i + 1, p, lerp(foot.pload, foot.load, alpha), frosted);
+    }
+    triangle(ai, bi, ci, p, load, frosted) {
+        const v = this.shoeScreen, a = ai * 5, b = bi * 5, c = ci * 5, f = this.field;
+        const ax = v[a], ay = v[a + 1], bx = v[b], by = v[b + 1], cx = v[c], cy = v[c + 1];
+        const den = (by - cy) * (ax - cx) + (cx - bx) * (ay - cy);
+        if (Math.abs(den) < 1e-6)
+            return;
+        const x0 = Math.max(0, Math.floor(Math.min(ax, bx, cx) - 1)), x1 = Math.min(f.width - 1, Math.ceil(Math.max(ax, bx, cx) + 1));
+        const y0 = Math.max(0, Math.floor(Math.min(ay, by, cy) - 1)), y1 = Math.min(f.height - 1, Math.ceil(Math.max(ay, by, cy) + 1));
+        const edgeScale = Math.abs(den) / Math.max(1e-6, Math.hypot(bx - cx, by - cy));
+        for (let y = y0; y <= y1; y++)
+            for (let x = x0; x <= x1; x++) {
+                const wa = ((by - cy) * (x + .5 - cx) + (cx - bx) * (y + .5 - cy)) / den;
+                const wb = ((cy - ay) * (x + .5 - cx) + (ax - cx) * (y + .5 - cy)) / den, wc = 1 - wa - wb;
+                // Only the outer edge gets coverage; internal fan edges remain seamless.
+                // This lets a sole cross optical pixels gradually instead of blinking a
+                // whole pixel on/off at each edge, while the character grid stays fixed.
+                const coverage = clamp(wa * edgeScale + .5);
+                if (wb < 0 || wc < 0 || coverage <= 0)
+                    continue;
+                const z = Math.max(0, wa * v[a + 2] + wb * v[b + 2] + wc * v[c + 2]), u = wa * v[a + 3] + wb * v[b + 3] + wc * v[c + 3], t = wa * v[a + 4] + wb * v[b + 4] + wc * v[c + 4];
+                const local = t / p.shoeLength, across = u / p.shoeWidth;
+                // Restrained chevron grooves and heel blocks are fixed in shoe space.
+                const chevron = Math.abs(Math.sin(t * 168 + Math.abs(u) * 108));
+                const groove = chevron < .18 && Math.abs(across) < .37;
+                const arch = local > -0.12 && local < .08 && Math.abs(across) < .25;
+                const heelSplit = local < -0.19 && Math.abs(across) < .045;
+                const tread = groove ? .6 : arch ? .68 : heelSplit ? .55 : 1;
+                const darkness = frosted ? (.13 + .84 * Math.exp(-z * 23)) * (.85 + load * .15) : .96;
+                f.deposit(y * f.width + x, z, darkness * tread * coverage);
+            }
+    }
+    ascii() {
+        const c = this.context, f = this.field, cw = this.cellX, ch = this.cellY, slot = 14, d = this.dpr;
+        // Most of the floor is empty. Mark small occupied tiles once, then expand
+        // by a tile so every bilinear edge sample remains covered. This avoids
+        // sampling the blank floor four times per character without adding trails.
+        const occupied = this.occupiedTiles, active = this.activeTiles, tc = this.tileCols, tr = this.tileRows;
+        occupied.fill(0);
+        active.fill(0);
+        for (let y = 0; y < f.height; y++) {
+            const ty = Math.min(tr - 1, Math.floor(y * f.pixel / (ch * 3))), row = y * f.width;
+            for (let x = 0; x < f.width; x++)
+                if (f.density[row + x] > .010) {
+                    const tx = Math.min(tc - 1, Math.floor(x * f.pixel / (cw * 4)));
+                    occupied[ty * tc + tx] = 1;
+                }
+        }
+        for (let y = 0; y < tr; y++)
+            for (let x = 0; x < tc; x++)
+                if (occupied[y * tc + x]) {
+                    for (let yy = Math.max(0, y - 1); yy <= Math.min(tr - 1, y + 1); yy++)
+                        for (let xx = Math.max(0, x - 1); xx <= Math.min(tc - 1, x + 1); xx++)
+                            active[yy * tc + xx] = 1;
+                }
+        for (let row = 0; row < this.rows; row++)
+            for (let col = 0; col < this.cols; col++) {
+                const x = col * cw + cw * .5, y = row * ch + ch * .5, index = row * this.cols + col;
+                if (!active[Math.floor(row / 3) * tc + (col >> 2)]) {
+                    this.history[index] = -1;
+                    this.previousDensity[index] = 0;
+                    continue;
+                }
+                // Four bilinear sub-cell samples smooth the silhouette, keeping glyphs crisp.
+                const density = (f.sample(x - cw * .22, y - ch * .22) + f.sample(x + cw * .22, y - ch * .22) + f.sample(x - cw * .22, y + ch * .22) + f.sample(x + cw * .22, y + ch * .22)) * .25;
+                if (density < .024) {
+                    this.history[index] = -1;
+                    this.previousDensity[index] = density;
+                    continue;
+                }
+                const target = clamp(Math.pow(density, .64));
+                let level = 0;
+                let distance = Infinity;
+                for (let i = 0; i < this.coverage.length; i++) {
+                    const dd = Math.abs(this.coverage[i] - target);
+                    if (dd < distance) {
+                        distance = dd;
+                        level = i;
+                    }
+                }
+                const previous = this.history[index];
+                if (previous >= 0 && Math.abs(this.coverage[previous] - target) < distance + .035)
+                    level = previous;
+                this.history[index] = level;
+                this.previousDensity[index] = density;
+                const palette = density > .42 ? 0 : 1;
+                c.globalAlpha = clamp(.16 + density * 1.12, .19, 1);
+                c.drawImage(this.atlas, level * slot * d, palette * slot * d, slot * d, slot * d, x - slot / 2, y - slot / 2, slot, slot);
+            }
+        c.globalAlpha = 1;
+    }
+    debug(people, options) {
+        const c = this.context;
+        c.save();
+        c.lineWidth = .8;
+        for (let i = 0; i < people.length; i++) {
+            const rig = this.rigs[i], j = rig.projected, p = people[i];
+            if (options.skeleton) {
+                c.strokeStyle = '#486b8ba6';
+                c.fillStyle = '#375b79';
+                for (const [a, b] of BONES) {
+                    c.beginPath();
+                    c.moveTo(j[a * 3], j[a * 3 + 1]);
+                    c.lineTo(j[b * 3], j[b * 3 + 1]);
+                    c.stroke();
+                }
+                for (let k = 0; k < 16; k++) {
+                    c.beginPath();
+                    c.arc(j[k * 3], j[k * 3 + 1], 1.6, 0, Math.PI * 2);
+                    c.fill();
+                }
+            }
+            if (options.anchors)
+                for (const foot of p.feet) {
+                    if (!foot.planted)
+                        continue;
+                    const pivot = foot.pitch > 0 ? -p.shoeLength * .43 : foot.pitch < 0 ? p.shoeLength * .57 : 0;
+                    const x = foot.ax + Math.cos(foot.yaw) * pivot, y = foot.ay + Math.sin(foot.yaw) * pivot;
+                    this.camera.project(x, y, 0, this.point);
+                    const sx = this.point[0], sy = this.point[1];
+                    c.strokeStyle = '#ce6037';
+                    c.beginPath();
+                    c.arc(sx, sy, 5, 0, Math.PI * 2);
+                    c.moveTo(sx - 8, sy);
+                    c.lineTo(sx + 8, sy);
+                    c.moveTo(sx, sy - 8);
+                    c.lineTo(sx, sy + 8);
+                    c.stroke();
+                    c.fillStyle = '#98634f';
+                    c.font = '8px monospace';
+                    c.fillText(foot.stage.toUpperCase(), sx + 10, sy + 3);
+                }
+            if (options.projection) {
+                const world = rig.joints;
+                c.strokeStyle = '#a87c5866';
+                c.setLineDash([2, 4]);
+                for (let k = 0; k < 16; k += 3) {
+                    this.camera.project(world[k * 3], world[k * 3 + 1], 0, this.point);
+                    c.beginPath();
+                    c.moveTo(j[k * 3], j[k * 3 + 1]);
+                    c.lineTo(this.point[0], this.point[1]);
+                    c.stroke();
+                }
+                c.setLineDash([]);
+            }
+        }
+        c.restore();
+    }
+}
+
+const el = (id) => document.getElementById(id);
+const camera = new Camera();
+camera.resize(innerWidth || 400, innerHeight || 800);
+const crowd = new Crowd(camera), renderer = new Renderer(el('scene'), camera);
+crowd.autoPopulation = true;
+const reduced = matchMedia('(prefers-reduced-motion: reduce)');
+const options = { diffusion: 1, frosted: true, skeleton: false, anchors: false, bands: false, projection: false };
+const stillRequested = new URLSearchParams(location.search).has('still');
+let playing = !reduced.matches && !stillRequested, speed = 1, last = 0, accumulator = 0, frames = 0, lastMetrics = 0, qualityReduced = false;
+let slowSeconds = 0;
+let displayedPopulation = -1;
+const fixed = 1 / 60;
+const playbackSpeeds = [1, 1.5, 2, 3, 4, .5, .25];
+function composedStart() {
+    crowd.targetCount = crowd.recommendedCount;
+    crowd.reset();
+    for (let i = 0; i < 240; i++)
+        crowd.update(fixed);
+    accumulator = 0;
+}
+function resize() { renderer.resize(el('experience').clientWidth || innerWidth || 400, el('experience').clientHeight || innerHeight || 800); crowd.targetCount = crowd.recommendedCount; qualityReduced = false; slowSeconds = 0; }
+resize();
+composedStart();
+let resizeTimer = 0;
+addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = window.setTimeout(() => { resize(); if (!playing)
+    render(1); }, 90); });
+// Embedded previews may load before their panel has a nonzero layout size.
+new ResizeObserver(entries => {
+    const box = entries[0].contentRect;
+    if (box.width > 0 && box.height > 0 && (Math.abs(box.width - renderer.width) > .5 || Math.abs(box.height - renderer.height) > .5)) {
+        resize();
+        if (!playing)
+            render(1);
+    }
+}).observe(el('experience'));
+function updatePlay() {
+    const button = el('play');
+    button.setAttribute('aria-label', playing ? 'Pause animation' : 'Play animation');
+    button.innerHTML = playing ? '<svg viewBox="0 0 18 18" aria-hidden="true"><path d="M6 4v10M12 4v10"/></svg><span>Pause</span>' : '<svg viewBox="0 0 18 18" aria-hidden="true"><path d="m6 4 8 5-8 5Z"/></svg><span>Play</span>';
+    el('status-text').textContent = `${String(crowd.solo ? 1 : crowd.people.length).padStart(2, '0')} ${playing ? 'PASSING STRANGERS' : 'STILL OBSERVATION'}`;
+    el('motion-note').hidden = !reduced.matches || playing;
+}
+function togglePlay() { playing = !playing; last = performance.now(); accumulator = 0; updatePlay(); }
+el('play').addEventListener('click', togglePlay);
+el('speed').addEventListener('click', () => {
+    speed = playbackSpeeds[(playbackSpeeds.indexOf(speed) + 1) % playbackSpeeds.length];
+    el('speed').innerHTML = `${speed === .5 ? '½' : speed === .25 ? '¼' : speed}× <span class="control-label">pace</span>`;
+    el('speed').setAttribute('aria-label', `Playback speed, ${speed} times`);
+});
+el('glass').addEventListener('click', () => {
+    options.frosted = !options.frosted;
+    el('glass').setAttribute('aria-pressed', String(options.frosted));
+    el('glass').innerHTML = `<span class="glass-icon" aria-hidden="true">${options.frosted ? '▧' : '□'}</span> <span>${options.frosted ? 'Frosted' : 'Clear'}</span>`;
+    if (!playing)
+        render(1);
+});
+el('solo').addEventListener('click', () => {
+    crowd.solo = !crowd.solo;
+    el('solo').setAttribute('aria-pressed', String(crowd.solo));
+    updatePlay();
+    if (!playing)
+        render(1);
+});
+el('randomness').addEventListener('click', () => {
+    crowd.randomness = !crowd.randomness;
+    el('randomness').setAttribute('aria-pressed', String(crowd.randomness));
+    el('random-state').textContent = crowd.randomness ? 'On' : 'Off';
+    composedStart();
+    last = performance.now();
+    updatePlay();
+    render(1);
+});
+const about = el('about');
+el('about-open').addEventListener('click', () => about.showModal());
+el('about-close').addEventListener('click', () => about.close());
+about.addEventListener('click', e => { if (e.target === about) {
+    const r = about.getBoundingClientRect();
+    if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom)
+        about.close();
+} });
+const toggleDebug = () => { el('debug').hidden = !el('debug').hidden; };
+el('debug-toggle').addEventListener('click', toggleDebug);
+el('debug-close').addEventListener('click', toggleDebug);
+for (const key of ['skeleton', 'anchors', 'bands', 'projection'])
+    el(key).addEventListener('change', e => { options[key] = e.target.checked; if (!playing)
+        render(1); });
+el('diffusion').addEventListener('input', e => { options.diffusion = Number(e.target.value); if (!playing)
+    render(1); });
+el('step').addEventListener('click', () => { playing = false; crowd.update(fixed); updatePlay(); render(1); });
+el('restart').addEventListener('click', () => { composedStart(); updatePlay(); if (!playing)
+    render(1); });
+el('phase').addEventListener('input', e => {
+    playing = false;
+    crowd.solo = true;
+    el('solo').setAttribute('aria-pressed', 'true');
+    const target = Number(e.target.value);
+    crowd.reset();
+    for (let i = 0; i < 240 && crowd.people[0].phase < target; i++)
+        crowd.update(fixed);
+    updatePlay();
+    render(1);
+});
+document.querySelector('.wordmark').addEventListener('click', e => { e.preventDefault(); composedStart(); if (!playing)
+    render(1); });
+addEventListener('keydown', e => {
+    if (e.target.matches('input,button,a') || about.open)
+        return;
+    if (e.code === 'Space') {
+        e.preventDefault();
+        togglePlay();
+    }
+    if (e.key.toLowerCase() === 'd')
+        toggleDebug();
+});
+document.addEventListener('visibilitychange', () => { last = 0; accumulator = 0; });
+reduced.addEventListener('change', () => { if (reduced.matches) {
+    playing = false;
+    updatePlay();
+    render(1);
+} });
+function render(alpha) { renderer.render(crowd.visiblePeople, alpha, options); }
+function frame(now) {
+    requestAnimationFrame(frame);
+    if (document.hidden) {
+        last = 0;
+        return;
+    }
+    const elapsed = last ? Math.min((now - last) / 1000, .1) : 0;
+    last = now;
+    if (playing) {
+        accumulator += elapsed * speed;
+        let catchup = 0;
+        const maxCatchup = Math.ceil(5 * Math.max(1, speed));
+        while (accumulator >= fixed && catchup < maxCatchup) {
+            crowd.update(fixed);
+            accumulator -= fixed;
+            catchup++;
+        }
+        if (catchup === maxCatchup)
+            accumulator = Math.min(accumulator, fixed);
+        render(accumulator / fixed);
+        frames++;
+    }
+    if (now - lastMetrics > 1000) {
+        const fps = frames * 1000 / (now - lastMetrics || 1000);
+        frames = 0;
+        lastMetrics = now;
+        const p = crowd.people[0];
+        if (displayedPopulation !== crowd.people.length) {
+            displayedPopulation = crowd.people.length;
+            updatePlay();
+        }
+        el('metrics').textContent = `${fps.toFixed(0)} fps · ${renderer.frameCost.toFixed(1)} ms / frame\n${renderer.field.width} × ${renderer.field.height} optical field\n${renderer.cols} × ${renderer.rows} character lattice\nL: ${p.feet[0].stage} / R: ${p.feet[1].stage}\nLoad L ${(p.feet[0].load * 100).toFixed(0)}% / R ${(p.feet[1].load * 100).toFixed(0)}%\n${p.speed.toFixed(2)} m/s · phase ${(p.phase % 1).toFixed(2)}${qualityReduced ? '\nAdaptive optical resolution' : ''}`;
+        const t = Math.floor(crowd.time);
+        el('time-text').textContent = `${String(Math.floor(t / 60)).padStart(2, '0')}:${String(t % 60).padStart(2, '0')}`;
+        slowSeconds = playing && renderer.frameCost > 18 ? slowSeconds + 1 : 0;
+        if (!qualityReduced && crowd.time > 8 && slowSeconds >= 3) {
+            renderer.setPerformanceMode();
+            qualityReduced = true;
+        }
+    }
+}
+updatePlay();
+render(1);
+requestAnimationFrame(frame);
+// Read-only diagnostics support reproducible browser inspection without a UI dependency.
+Object.defineProperty(window, 'passage', { value: {
+        get snapshot() { return { time: crowd.time, playing, speed, renderMs: renderer.frameCost, people: crowd.visiblePeople.map(p => ({ id: p.id, x: p.x, y: p.y, speed: p.speed, feet: p.feet.map(f => ({ stage: f.stage, x: f.x, y: f.y, z: f.z, planted: f.planted })) })) }; },
+    }, writable: false });
+//# sourceMappingURL=index-D2jvutmY.js.map

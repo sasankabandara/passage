@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#e8eff2" />
+    <meta name="description" content="An ASCII study of passing strangers, seen from beneath illuminated frosted glass. Watch the weight of a footstep become visible." />
+    <title>Passage — A study from below</title>
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23e8eff2'/%3E%3Cpath d='M34 0v64M0 18h64M0 46h64' stroke='%23db6338' stroke-width='2'/%3E%3Cellipse cx='24' cy='33' rx='6' ry='13' fill='%232a3d49' transform='rotate(20 24 33)'/%3E%3C/svg%3E" />
+    <script type="module" crossorigin src="./assets/index-D2jvutmY.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-DNy7drmw.css">
+  </head>
+  <body>
+    <main id="experience">
+      <canvas id="scene" aria-label="Animated ASCII pedestrians walking above frosted glass, viewed from underneath"></canvas>
+      <header class="masthead">
+        <a class="wordmark" href="#" aria-label="Passage, reset study"><span class="mark" aria-hidden="true">⊹</span> FIELDWORK<span class="edition"> / NO. 003</span></a>
+        <div class="study-label">OBSERVATIONS OF THE EVERYDAY</div>
+        <button id="about-open" class="text-button">About the study <span aria-hidden="true">↗</span></button>
+      </header>
+      <div class="side-caption" aria-hidden="true">HUMAN MOVEMENT / AN OPTICAL STUDY</div>
+      <section class="title-block" aria-label="Study title">
+        <div class="eyebrow"><span class="live-dot"></span> A STUDY FROM BELOW</div>
+        <h1>Passage<span class="title-period">.</span></h1>
+        <p>Strangers above. A moment beneath.</p>
+      </section>
+      <div class="coordinate" aria-hidden="true"><span class="crosshair">+</span><span>PLANE 00<br>z = 0.000 m</span></div>
+      <div class="scene-status"><span class="live-dot"></span><span id="status-text">06 PASSING STRANGERS</span><span class="status-rule"></span><span id="time-text">00:00</span></div>
+      <footer class="footer">
+        <div class="controls" role="group" aria-label="Animation controls">
+          <button id="play" class="play-button" aria-label="Pause animation"><svg viewBox="0 0 18 18" aria-hidden="true"><path d="M6 4v10M12 4v10"/></svg><span>Pause</span></button>
+          <span class="divider"></span>
+          <button id="speed" aria-label="Playback speed, 1 times">1× <span class="control-label">pace</span></button>
+          <span class="divider"></span>
+          <button id="glass" aria-pressed="true"><span class="glass-icon" aria-hidden="true">▧</span> <span>Frosted</span></button>
+          <button id="solo" class="solo-button" aria-pressed="false" title="Follow a single pedestrian">Solo</button>
+          <button id="randomness" class="random-button" aria-pressed="false" title="Vary walking styles, speeds, and directions"><span>Randomness</span><span id="random-state" class="random-state">Off</span></button>
+        </div>
+        <div class="footer-note">EVERY FOOTSTEP, A FLEETING IMPRESSION.<span>GENERATIVE CANVAS · ASCII</span></div>
+        <button id="debug-toggle" class="debug-access" aria-label="Open technical controls" title="Technical controls (D)">[ d ]</button>
+      </footer>
+      <aside id="debug" hidden aria-label="Technical controls">
+        <div class="debug-heading">OBSERVATION TOOLS <button id="debug-close" aria-label="Close technical controls">×</button></div>
+        <label><input id="skeleton" type="checkbox"> Articulated skeleton</label>
+        <label><input id="anchors" type="checkbox"> Contact anchors</label>
+        <label><input id="bands" type="checkbox"> Height bands</label>
+        <label><input id="projection" type="checkbox"> Projection guides</label>
+        <label>Optical diffusion <input id="diffusion" type="range" min="0" max="1.6" value="1" step="0.1"></label>
+        <label>Gait phase <input id="phase" type="range" min="0" max="1" value="0" step="0.01"></label>
+        <div class="debug-actions"><button id="step">Step +1/60</button><button id="restart">Reset study</button></div>
+        <output id="metrics">Preparing optical field…</output>
+      </aside>
+      <div id="motion-note" hidden>Motion is paused for your preference. Press Play to begin.</div>
+      <dialog id="about">
+        <button id="about-close" class="dialog-close" aria-label="Close study notes">×</button>
+        <div class="eyebrow">FIELDWORK / NO. 003</div>
+        <h2>The weight of<br>a passing moment.</h2>
+        <p>From below, the everyday becomes unfamiliar. A heel meets the glass. The sole sharpens. A body dissolves into a field of quiet marks.</p>
+        <p><em>Passage</em> is a real-time, generative study of this small exchange. Every stranger has a different route and rhythm. Their feet hold the floor; the world moves around them.</p>
+        <div class="notes-grid"><div><span>THE SURFACE</span>Light scatters with height. Contact is dark; distance is faint.</div><div><span>THE MEDIUM</span>Procedural human rigs, translated into a fixed lattice of ASCII.</div></div>
+        <p class="dialog-tip">Space to pause · D for observation tools<br>No recording. No loop. Just passing through.</p>
+      </dialog>
+    </main>
+  </body>
+</html>
