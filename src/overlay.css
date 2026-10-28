@@ -1,0 +1,15 @@
+/* Keep the editable title secondary to the contact details in every viewport. */
+.title-block{left:50%;top:8.5%;transform:translateX(-50%);text-align:center;white-space:nowrap}
+.title-block .eyebrow{justify-content:center;font-size:8px}
+.title-block h1{font-size:56px;margin:8px 0;letter-spacing:-.05em}
+.title-block p{font-size:10px}
+@media(max-width:760px){
+  .title-block{top:9%}
+  .title-block h1{font-size:40px}
+  .title-block .eyebrow{font-size:6px}
+  .title-block p{font-size:9px}
+}
+ .controls .random-button{border:1px solid #9aafb840;padding:8px 10px;margin-left:2px}
+ .random-state{font-size:8px;opacity:.65}
+ .random-button[aria-pressed=true]{color:#9e593e;background:#d9bda34d;border-color:#b77b5a80}
+ @media(max-width:480px){.controls{display:grid;grid-template-columns:auto auto auto;height:auto;gap:3px}.controls .divider{display:none}.controls .random-button{grid-column:2 / 4;justify-content:center}.controls .solo-button{margin-left:0;justify-content:center}.footer{align-items:flex-end}.scene-status{bottom:134px}#motion-note{bottom:137px}}

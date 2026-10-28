@@ -1,0 +1,14 @@
+{
+  "name": "passage-under-glass",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --configLoader native --host 127.0.0.1",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc --noEmit && vite build --configLoader native",
+    "portable": "node scripts/package-standalone.mjs",
+    "test": "tsc -p tsconfig.test.json && node --test --test-isolation=none tests/gait.test.mjs"
+  },
+  "devDependencies": { "typescript": "^5.9.3", "vite": "^7.1.12" }
+}

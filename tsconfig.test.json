@@ -1,0 +1,5 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "noEmit": false, "outDir": ".test-build", "rootDir": "src", "declaration": false },
+  "include": ["src/math.ts", "src/gait.ts", "src/rig.ts", "src/crowd.ts", "src/camera.ts", "src/field.ts", "src/collision.ts", "src/geometry.ts", "src/inspection.ts"]
+}
