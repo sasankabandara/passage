@@ -4,6 +4,7 @@ import { clamp, Random } from './math.js';
 import { Rig } from './rig.js';
 import { bodyClearance, constrainCrowdMotion, figureGap, StepReservations } from './collision.js';
 const HEADINGS=[0,.28,.55,.85,1.18,1.50,-.28,-.55,-.85,-1.18,-1.50];
+const ESCAPE_HEADINGS=[...HEADINGS,2.05,-2.05,2.6,-2.6,Math.PI];
 const HORIZONS=[.55,1.15,1.9];
 const LANE_SPACING=2.3,ARRIVAL_SPACING=3.15,FOLLOWING_DISTANCE=3.05;
 
@@ -159,6 +160,9 @@ export class Crowd {
       }
       this.preferred[0]=0;this.preferred[1]=vertical*pace;return;
     }
+    // If neither foot can begin the requested pivot, first make room in the
+    // current facing direction. Retrying the same blocked turn never releases it.
+    if(p.turnYaw!==null&&p.stillFor>2&&p.sinceStep>2&&p.blockedFor>0){p.turnYaw=null;p.turnHoldYaw=p.yaw;p.turnHoldFor=1.6;}
     if(p.turnHoldFor>0&&p.turnYaw===null){this.preferred[0]=Math.cos(p.turnHoldYaw)*p.pace*.60;this.preferred[1]=Math.sin(p.turnHoldYaw)*p.pace*.60;return;}
     if(p.turnYaw!==null){
       if(Math.abs(Math.atan2(Math.sin(p.turnYaw-p.yaw),Math.cos(p.turnYaw-p.yaw)))<.18){p.turnHoldYaw=p.turnYaw;p.turnHoldFor=1.6;p.turnYaw=null;this.preferred[0]=Math.cos(p.turnHoldYaw)*p.pace*.60;this.preferred[1]=Math.sin(p.turnHoldYaw)*p.pace*.60;return;}
@@ -174,12 +178,15 @@ export class Crowd {
       }
       if(clear){this.preferred[0]=fx*p.pace;this.preferred[1]=fy*p.pace;return;}
     }
-    for(let option=0;option<=HEADINGS.length*2;option++){
-      const stop=option===HEADINGS.length*2,offset=stop?0:HEADINGS[Math.floor(option/2)],yaw=goalYaw+offset;
+    // A blocked group sometimes needs one person to turn away from their goal
+    // before anyone can pass. Keep those detours out of ordinary flowing traffic.
+    const headings=p.stillFor>2?ESCAPE_HEADINGS:HEADINGS;
+    for(let option=0;option<=headings.length*2;option++){
+      const stop=option===headings.length*2,offset=stop?0:headings[Math.floor(option/2)],yaw=goalYaw+offset;
       const turn=Math.atan2(Math.sin(yaw-p.yaw),Math.cos(yaw-p.yaw));
       const pace=stop?0:p.pace*(option%2===0?1:.48)*(.28+.72*Math.max(0,Math.cos(turn)));
       const vx=Math.cos(yaw)*pace,vy=Math.sin(yaw)*pace;
-      let cost=stop?.75:-(vx*fx+vy*fy)*2.2+Math.abs(offset)*.12+(offset*p.avoidSide<0?.80:0)+Math.hypot(vx-p.desiredX,vy-p.desiredY)*.12;
+      let cost=stop?.75+Math.min(3,Math.max(0,p.stillFor-2)*.35):-(vx*fx+vy*fy)*2.2+Math.abs(offset)*.12+(offset*p.avoidSide<0?.80:0)+Math.hypot(vx-p.desiredX,vy-p.desiredY)*.12;
       for(let j=0;j<n;j++){
         const q=this.people[j];if(q===p||Math.hypot(p.x-q.x,p.y-q.y)>3.7)continue;
         const now=figureGap(p,q,this.camera),required=Math.min(.22,Math.max(.075,now));

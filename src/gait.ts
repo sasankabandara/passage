@@ -62,12 +62,16 @@ function planStep(p: Walker, f: Foot, stopping: boolean,guard?:StepGuard,turning
   // with the intended walk rather than turning a shoe at every solver correction.
   const travelYaw=turning?intent:p.yaw+clamp(angleDelta(p.yaw,intent),-.30,.30);
   // Reachable orientation changes are distributed across successive foot placements.
-  f.toYaw = f.yaw + clamp(angleDelta(f.yaw,travelYaw+f.side*.035),turning?-.55:-.33,turning?.55:.33);
+  // Both feet turn around the same side of the body. Independent shortest
+  // angles can send the two shoes opposite ways during a near-180-degree turn.
+  const bodyTurn=angleDelta(p.yaw,travelYaw);
+  const footTurn=turning&&Math.abs(bodyTurn)>2.5?bodyTurn+angleDelta(f.yaw,p.yaw)+f.side*.035:angleDelta(f.yaw,travelYaw+f.side*.035);
+  f.toYaw = f.yaw + clamp(footTurn,turning?-.55:-.33,turning?.55:.33);
   const supporting=p.feet[f.side<0?1:0];
   f.toYaw=supporting.yaw+clamp(angleDelta(supporting.yaw,f.toYaw),-.60,.60);
   f.fromYaw=f.yaw; f.fromX=f.ax; f.fromY=f.ay;
   const turn = Math.abs(angleDelta(p.yaw,travelYaw));
-  f.duration=(turning?.28:clamp(.50-s*.075,.40,.50))/p.cadenceScale;
+  f.duration=(turning?.28:clamp(.54-s*.075,.44,.54))/p.cadenceScale;
   const lateral = f.side*Math.max(FOOT_GAP*p.scale,p.shoeWidth*.80+.010);
   // Each walking foot passes the supporting foot. Root-relative targets can
   // settle into a step-to pattern after braking: one leg always leads while
@@ -165,7 +169,8 @@ export function updateGait(p: Walker, dt: number,guard?:StepGuard,motion?:Float6
     const feetYaw=angleLerp(p.feet[0].yaw,p.feet[1].yaw,.5);
     p.yaw=feetYaw+clamp(angleDelta(feetYaw,p.yaw+delta),-.35,.35);
   }
-  const halfPeriod=clamp((.38+.12*Math.min(p.gaitSpeed,1))/Math.max(p.gaitSpeed,.08),.54,1.10)/p.cadenceScale;
+  // A little more travel between alternating contacts, without raising body speed.
+  const halfPeriod=clamp((.38+.12*Math.min(p.gaitSpeed,1))/Math.max(p.gaitSpeed,.08),.54,1.10)*1.06/p.cadenceScale;
   p.sinceStep+=dt; p.stepTravel+=p.speed*dt;
   for(const f of p.feet) {
     f.t+=dt;

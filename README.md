@@ -15,7 +15,7 @@ Open the printed local URL. For production: `npm run build`, then serve `dist/` 
 
 The Vite config uses TypeScript's in-process transpiler, disables unnecessary dependency scanning, and preserves symlinks. This avoids native subprocess requirements in restricted Windows environments. Type checking remains a separate build gate. The build target is modern browsers with ES2022, ResizeObserver, Canvas 2D, and HTML dialog support.
 
-The separate `gait-study.html` lets you inspect the same rig frame by frame from the side and from below. Regenerate it after compiling the tests with `node scripts/gait-study.mjs`. Its ½× playback shows heel strike, foot-flat support, heel rise before the opposite landing, toe-off, knee flexion and early heel lift, and toe clearance. The steady 0.82 m/s study measures a 1.04 m stride, 1.27 s cycle, and 64% support / 36% swing.
+The separate `gait-study.html` lets you inspect the same rig frame by frame from the side and from below. Regenerate it after compiling the tests with `node scripts/gait-study.mjs`. Its ½× playback shows heel strike, foot-flat support, heel rise before the opposite landing, toe-off, knee flexion and early heel lift, and toe clearance. The steady 0.82 m/s study measures a 1.09 m stride, 1.33 s cycle, and 64% support / 36% swing. Slightly longer swing and cadence timing place steps about 5% farther apart at the same walking speed while preserving the original reach limits.
 
 ## Controls
 
@@ -68,7 +68,7 @@ Motion-continuity regressions check forward shoe-centre movement and frame-to-fr
 
 A busy-floor regression exercises 20 → 12 → 20 walkers across wide and portrait views over three simulated minutes. It checks actual projected bodies and soles at previous, midpoint, and current poses, world-space shoe spacing, continued admissions, visible traffic flow, and a population that remains visibly busier.
 
-Two further regressions check balanced left/right strides during arrivals and slowdowns, and two minutes of random traffic through a desktop-to-mobile resize. Random traffic checks persistent style and speed variation, multiple heading sectors, continued arrivals, consecutive stationary periods, fixed leg lengths, finite poses, and actual projected body/sole clearance at previous, midpoint, and current poses. All 24 tests pass.
+Further regressions check balanced left/right strides during arrivals and slowdowns, coordinated feet through near-half-turns in both directions, and two minutes of random traffic through a desktop-to-mobile resize. Random traffic checks persistent style and speed variation, multiple heading sectors, continued arrivals, consecutive stationary periods, fixed leg lengths, finite poses, and actual projected body/sole clearance at previous, midpoint, and current poses. Blocked groups can turn away temporarily to create passing room; an unavailable pivot releases into a short move in the current facing direction before retrying the route. All 25 tests pass.
 
 Gait references used for the revision: [University of Oklahoma gait-cycle phases](https://www.ouhsc.edu/bserdac/dthompso/web/gait/terms.htm) and [University of Alberta rocker and swing descriptions](https://engcourses-uofa.ca/books/ortho/gait-analysis/).
 

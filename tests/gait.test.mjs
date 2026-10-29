@@ -275,6 +275,21 @@ test('a turning shoe follows its rounded arc without stopping at the outward way
   assert.ok(Math.min(...speeds)>.25,`turning foot paused mid-arc: ${Math.min(...speeds)}m/s`);
 });
 
+test('both feet commit to the same direction through a near-half-turn',()=>{
+  for(const direction of [-1,1]){
+    const p=createWalker(0,0,0,0),target=direction*(Math.PI-.08);
+    for(const f of p.feet)f.yaw=f.pyaw=f.anchorYaw=f.side*.3;
+    p.turnYaw=target;p.desiredX=Math.cos(target)*.13;p.desiredY=Math.sin(target)*.13;
+    let finished=false;
+    for(let i=0;i<600;i++){
+      updateGait(p,dt);
+      const error=Math.atan2(Math.sin(target-p.yaw),Math.cos(target-p.yaw));
+      if(Math.abs(error)<.18){finished=true;break;}
+    }
+    assert.ok(finished,`the feet opposed one another during a ${direction>0?'left':'right'} half-turn`);
+  }
+});
+
 test('render interpolation starts at the complete prior pose through lift-off and landing',()=>{
   const p=createWalker(0,0,0,0),rig=new Rig();p.desiredX=.82;
   let previous=Array.from(rig.update(p));

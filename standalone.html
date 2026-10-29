@@ -111,14 +111,18 @@ function planStep(p, f, stopping, guard, turning = false, releaseSpace = false) 
     // with the intended walk rather than turning a shoe at every solver correction.
     const travelYaw = turning ? intent : p.yaw + clamp(angleDelta(p.yaw, intent), -0.3, .30);
     // Reachable orientation changes are distributed across successive foot placements.
-    f.toYaw = f.yaw + clamp(angleDelta(f.yaw, travelYaw + f.side * .035), turning ? -0.55 : -0.33, turning ? .55 : .33);
+    // Both feet turn around the same side of the body. Independent shortest
+    // angles can send the two shoes opposite ways during a near-180-degree turn.
+    const bodyTurn = angleDelta(p.yaw, travelYaw);
+    const footTurn = turning && Math.abs(bodyTurn) > 2.5 ? bodyTurn + angleDelta(f.yaw, p.yaw) + f.side * .035 : angleDelta(f.yaw, travelYaw + f.side * .035);
+    f.toYaw = f.yaw + clamp(footTurn, turning ? -0.55 : -0.33, turning ? .55 : .33);
     const supporting = p.feet[f.side < 0 ? 1 : 0];
     f.toYaw = supporting.yaw + clamp(angleDelta(supporting.yaw, f.toYaw), -0.6, .60);
     f.fromYaw = f.yaw;
     f.fromX = f.ax;
     f.fromY = f.ay;
     const turn = Math.abs(angleDelta(p.yaw, travelYaw));
-    f.duration = (turning ? .28 : clamp(.50 - s * .075, .40, .50)) / p.cadenceScale;
+    f.duration = (turning ? .28 : clamp(.54 - s * .075, .44, .54)) / p.cadenceScale;
     const lateral = f.side * Math.max(FOOT_GAP * p.scale, p.shoeWidth * .80 + .010);
     // Each walking foot passes the supporting foot. Root-relative targets can
     // settle into a step-to pattern after braking: one leg always leads while
@@ -280,7 +284,8 @@ function updateGait(p, dt, guard, motion, offset = 0) {
         const feetYaw = angleLerp(p.feet[0].yaw, p.feet[1].yaw, .5);
         p.yaw = feetYaw + clamp(angleDelta(feetYaw, p.yaw + delta), -0.35, .35);
     }
-    const halfPeriod = clamp((.38 + .12 * Math.min(p.gaitSpeed, 1)) / Math.max(p.gaitSpeed, .08), .54, 1.10) / p.cadenceScale;
+    // A little more travel between alternating contacts, without raising body speed.
+    const halfPeriod = clamp((.38 + .12 * Math.min(p.gaitSpeed, 1)) / Math.max(p.gaitSpeed, .08), .54, 1.10) * 1.06 / p.cadenceScale;
     p.sinceStep += dt;
     p.stepTravel += p.speed * dt;
     for (const f of p.feet) {
@@ -819,6 +824,7 @@ function constrainCrowdMotion(people, motion, n, dt, camera) {
 }
 
 const HEADINGS = [0, .28, .55, .85, 1.18, 1.50, -0.28, -0.55, -0.85, -1.18, -1.5];
+const ESCAPE_HEADINGS = [...HEADINGS, 2.05, -2.05, 2.6, -2.6, Math.PI];
 const HORIZONS = [.55, 1.15, 1.9];
 const LANE_SPACING = 2.3, ARRIVAL_SPACING = 3.15, FOLLOWING_DISTANCE = 3.05;
 class Crowd {
@@ -1088,6 +1094,13 @@ class Crowd {
             this.preferred[1] = vertical * pace;
             return;
         }
+        // If neither foot can begin the requested pivot, first make room in the
+        // current facing direction. Retrying the same blocked turn never releases it.
+        if (p.turnYaw !== null && p.stillFor > 2 && p.sinceStep > 2 && p.blockedFor > 0) {
+            p.turnYaw = null;
+            p.turnHoldYaw = p.yaw;
+            p.turnHoldFor = 1.6;
+        }
         if (p.turnHoldFor > 0 && p.turnYaw === null) {
             this.preferred[0] = Math.cos(p.turnHoldYaw) * p.pace * .60;
             this.preferred[1] = Math.sin(p.turnHoldYaw) * p.pace * .60;
@@ -1129,12 +1142,15 @@ class Crowd {
                 return;
             }
         }
-        for (let option = 0; option <= HEADINGS.length * 2; option++) {
-            const stop = option === HEADINGS.length * 2, offset = stop ? 0 : HEADINGS[Math.floor(option / 2)], yaw = goalYaw + offset;
+        // A blocked group sometimes needs one person to turn away from their goal
+        // before anyone can pass. Keep those detours out of ordinary flowing traffic.
+        const headings = p.stillFor > 2 ? ESCAPE_HEADINGS : HEADINGS;
+        for (let option = 0; option <= headings.length * 2; option++) {
+            const stop = option === headings.length * 2, offset = stop ? 0 : headings[Math.floor(option / 2)], yaw = goalYaw + offset;
             const turn = Math.atan2(Math.sin(yaw - p.yaw), Math.cos(yaw - p.yaw));
             const pace = stop ? 0 : p.pace * (option % 2 === 0 ? 1 : .48) * (.28 + .72 * Math.max(0, Math.cos(turn)));
             const vx = Math.cos(yaw) * pace, vy = Math.sin(yaw) * pace;
-            let cost = stop ? .75 : -(vx * fx + vy * fy) * 2.2 + Math.abs(offset) * .12 + (offset * p.avoidSide < 0 ? .80 : 0) + Math.hypot(vx - p.desiredX, vy - p.desiredY) * .12;
+            let cost = stop ? .75 + Math.min(3, Math.max(0, p.stillFor - 2) * .35) : -(vx * fx + vy * fy) * 2.2 + Math.abs(offset) * .12 + (offset * p.avoidSide < 0 ? .80 : 0) + Math.hypot(vx - p.desiredX, vy - p.desiredY) * .12;
             for (let j = 0; j < n; j++) {
                 const q = this.people[j];
                 if (q === p || Math.hypot(p.x - q.x, p.y - q.y) > 3.7)
