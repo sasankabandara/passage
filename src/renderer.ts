@@ -29,7 +29,7 @@ export class Renderer {
     this.canvas.width=Math.round(w*this.dpr);this.canvas.height=Math.round(h*this.dpr);
     this.context.setTransform(this.dpr,0,0,this.dpr,0,0);this.context.imageSmoothingEnabled=false;
     this.camera.resize(w,h);this.field.resize(w,h,w<600,this.performanceMode?1.25:1);
-    this.cellX=w<600?3.8:4.6;this.cellY=w<600?5.0:5.8;
+    this.cellX=w<600?3.0:4.6;this.cellY=w<600?4.0:5.8;
     this.cols=Math.ceil(w/this.cellX);this.rows=Math.ceil(h/this.cellY);
     this.tileCols=Math.ceil(this.cols/4);this.tileRows=Math.ceil(this.rows/3);
     this.occupiedTiles=new Uint8Array(this.tileCols*this.tileRows);this.activeTiles=new Uint8Array(this.occupiedTiles.length);
@@ -44,9 +44,9 @@ export class Renderer {
     const dpr=this.dpr,slot=14;
     this.atlas.width=slot*this.glyphs.length*dpr;this.atlas.height=slot*2*dpr;
     const a=this.atlasCtx;a.setTransform(dpr,0,0,dpr,0,0);a.clearRect(0,0,this.atlas.width,this.atlas.height);
-    a.font=`${this.cellY+2.2}px 'Courier New',monospace`;a.textAlign='center';a.textBaseline='middle';
+    a.font=`${this.width<600?'700 ':''}${this.cellY+2.2}px 'Courier New',monospace`;a.textAlign='center';a.textBaseline='middle';
     for(let row=0;row<2;row++){
-      a.fillStyle=row===0?'#162c38':'#5a7688';
+      a.fillStyle=row===0?'#162c38':this.width<600?'#425f72':'#5a7688';
       for(let i=0;i<this.glyphs.length;i++)a.fillText(this.glyphs[i],i*slot+slot/2,row*slot+slot/2);
     }
     this.coverage.length=0;
@@ -76,7 +76,7 @@ export class Renderer {
       c.strokeStyle='#fff5d9ba';c.lineWidth=.55;c.beginPath();if(vertical){c.moveTo(pos+1.1,0);c.lineTo(pos+1.1,h);}else{c.moveTo(0,pos+.8);c.lineTo(w,pos+.8);}c.stroke();
     };
     seam(vx,true);for(const y of hy)seam(y,false);
-    c.fillStyle='#607f9733';c.beginPath();
+    c.fillStyle=this.width<600?'#607f9724':'#607f9733';c.beginPath();
     const spacing=this.width<600?5.6:6.4;
     for(let y=2.7;y<h;y+=spacing)for(let x=2.7;x<w;x+=spacing){c.moveTo(x+.43,y);c.arc(x,y,.43,0,Math.PI*2);}c.fill();
     c.strokeStyle='#75919e19';c.lineWidth=1;c.strokeRect(12.5,12.5,w-25,h-25);
@@ -152,8 +152,11 @@ export class Renderer {
       const groove=chevron<.18&&Math.abs(across)<.37;
       const arch=local>-.12&&local<.08&&Math.abs(across)<.25;
       const heelSplit=local<-.19&&Math.abs(across)<.045;
-      const tread=groove?.6:arch?.68:heelSplit?.55:1;
-      const darkness=frosted?(.13+.84*Math.exp(-z*23))*(.85+load*.15):.96;
+      // Subpixel grooves otherwise break a phone-sized sole into faint specks.
+      // Keep its physical outline, but retain more ink and a softer lift falloff.
+      const small=this.width<600;
+      const tread=small?(groove?.78:arch?.80:heelSplit?.75:1):(groove?.6:arch?.68:heelSplit?.55:1);
+      const darkness=frosted?(small?(.18+1.02*Math.exp(-z*18)):(.13+.84*Math.exp(-z*23)))*(.85+load*.15):.96;
       f.deposit(y*f.width+x,z,darkness*tread*coverage);
     }
   }
@@ -185,8 +188,8 @@ export class Renderer {
       const previous=this.history[index];
       if(previous>=0&&Math.abs(this.coverage[previous]-target)<distance+.035)level=previous;
       this.history[index]=level;this.previousDensity[index]=density;
-      const palette=density>.42?0:1;
-      c.globalAlpha=clamp(.16+density*1.12,.19,1);
+      const small=this.width<600,palette=density>(small?.34:.42)?0:1;
+      c.globalAlpha=small?clamp(.24+density*1.25,.26,1):clamp(.16+density*1.12,.19,1);
       c.drawImage(this.atlas,level*slot*d,palette*slot*d,slot*d,slot*d,x-slot/2,y-slot/2,slot,slot);
     }
     c.globalAlpha=1;

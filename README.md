@@ -54,6 +54,8 @@ The regular crowd follows three vertical lanes on smaller screens and five on wi
 
 The static glass, dot grid, seams, and glyph atlas are cached. Temporary joint, projection, and image buffers are reused. No footprints persist. No network request is required after loading the application; the optional web fonts gracefully fall back to local fonts.
 
+Below 600 CSS pixels, footprints use a finer 2 px optical field and 3 × 4 px character lattice, heavier glyphs, stronger sole contrast, and less subpixel tread breakup. Lifted feet fade more gradually so both sides of the step remain legible, while the floor dots are quieter. The world scale, shoe contours, walking behavior, and spacing stay the same. Adaptive resolution can reduce field detail on slower devices while retaining the mobile contrast treatment.
+
 ## Validation
 
 `npm test` covers sustained commanded travel; world-space stance locking and heel/toe pivots; alternating steps and double support; swing clearance and landing continuity; shoe/plane separation; leg lengths through acceleration, both turn directions, stopping and restarting; settled idle poses; true height projection; and a deterministic five-minute crowd run with portrait/landscape changes and repeated entrances/exits.

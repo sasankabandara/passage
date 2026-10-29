@@ -10,7 +10,7 @@ export class OpticalField {
   bands:Float32Array[]=[];depths:Float32Array[]=[];
   scratch=new Float32Array(1);filtered=new Float32Array(1);density=new Float32Array(1);
   resize(w:number,h:number,small=false,qualityScale=1){
-    this.pixel=(small?2.5:3.1)*qualityScale;this.width=Math.ceil(w/this.pixel);this.height=Math.ceil(h/this.pixel);this.size=this.width*this.height;
+    this.pixel=(small?2.0:3.1)*qualityScale;this.width=Math.ceil(w/this.pixel);this.height=Math.ceil(h/this.pixel);this.size=this.width*this.height;
     this.bands=this.centers.map(()=>new Float32Array(this.size));
     this.depths=this.centers.map(()=>new Float32Array(this.size));
     this.scratch=new Float32Array(this.size);this.filtered=new Float32Array(this.size);this.density=new Float32Array(this.size);
